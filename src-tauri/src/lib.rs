@@ -1,6 +1,8 @@
 mod data;
 #[cfg(target_os = "windows")]
 mod desktop_mode;
+#[cfg(target_os = "windows")]
+mod window_shape;
 
 use std::sync::Mutex;
 
@@ -231,6 +233,52 @@ fn hide_to_tray(app: AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn start_window_drag(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SendMessageW, HTCAPTION, WM_NCLBUTTONDOWN,
+        };
+
+        let native_handle = window.hwnd().map_err(|error| error.to_string())?.0;
+        // Delegate to Windows' non-client caption handling. This does not rely on
+        // WebView pointer capture, so it works equally for every custom title bar.
+        unsafe {
+            ReleaseCapture();
+            SendMessageW(native_handle, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    window.start_dragging().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn start_window_resize(window: tauri::WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::ReleaseCapture;
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            SendMessageW, HTBOTTOMRIGHT, WM_NCLBUTTONDOWN,
+        };
+
+        let native_handle = window.hwnd().map_err(|error| error.to_string())?.0;
+        unsafe {
+            ReleaseCapture();
+            SendMessageW(native_handle, WM_NCLBUTTONDOWN, HTBOTTOMRIGHT as usize, 0);
+        }
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    window
+        .start_resize_dragging(tauri::ResizeDirection::SouthEast)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn window_mode(app: AppHandle) -> Result<String, String> {
     Ok(read_window_mode(&app)?.id().to_string())
 }
@@ -243,6 +291,51 @@ fn load_bootstrap_data(store: tauri::State<'_, DataStore>) -> Result<data::Boots
 #[tauri::command]
 fn save_theme_setting(store: tauri::State<'_, DataStore>, theme: String) -> Result<String, String> {
     store.save_theme(&theme).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_tasks(
+    store: tauri::State<'_, DataStore>,
+    status: String,
+) -> Result<Vec<data::TaskDto>, String> {
+    store.list_tasks(&status).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_task(store: tauri::State<'_, DataStore>, id: String) -> Result<data::TaskDto, String> {
+    store.get_task(&id).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn create_task(
+    store: tauri::State<'_, DataStore>,
+    input: data::CreateTaskInput,
+) -> Result<data::TaskDto, String> {
+    store.create_task(input).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn update_task(
+    store: tauri::State<'_, DataStore>,
+    input: data::UpdateTaskInput,
+) -> Result<data::TaskDto, String> {
+    store.update_task(input).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_task_status(
+    store: tauri::State<'_, DataStore>,
+    id: String,
+    status: String,
+) -> Result<data::TaskDto, String> {
+    store
+        .set_task_status(&id, &status)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn delete_task(store: tauri::State<'_, DataStore>, id: String) -> Result<(), String> {
+    store.delete_task(&id).map_err(|error| error.to_string())
 }
 
 fn configure_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -332,21 +425,45 @@ pub fn run() {
         .setup(|app| {
             let store = DataStore::open(app.handle()).map_err(|error| error.to_string())?;
             app.manage(store);
+            #[cfg(target_os = "windows")]
+            if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+                let native_handle = desktop_mode::top_level_window(
+                    window.hwnd().map_err(|error| error.to_string())?.0,
+                );
+                let _ = window_shape::apply_rounded_region(native_handle);
+            }
             configure_tray(app)?;
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            WindowEvent::Resized(_) =>
+            {
+                #[cfg(target_os = "windows")]
+                if let Ok(window_handle) = window.hwnd() {
+                    let native_handle = desktop_mode::top_level_window(window_handle.0);
+                    let _ = window_shape::apply_rounded_region(native_handle);
+                }
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             set_window_mode,
             hide_to_tray,
+            start_window_drag,
+            start_window_resize,
             window_mode,
             load_bootstrap_data,
-            save_theme_setting
+            save_theme_setting,
+            list_tasks,
+            get_task,
+            create_task,
+            update_task,
+            set_task_status,
+            delete_task
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -6,7 +6,7 @@ use std::{
 };
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
@@ -78,6 +78,39 @@ pub struct BootstrapDto {
     pub palette: Vec<PaletteColorDto>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateTaskInput {
+    pub title: String,
+    pub note: String,
+    pub category_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateTaskInput {
+    pub id: String,
+    pub title: String,
+    pub note: String,
+    pub category_id: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskDto {
+    pub id: String,
+    pub title: String,
+    pub note: String,
+    pub category_id: String,
+    pub category_name: String,
+    pub category_color: String,
+    pub status: String,
+    pub due_at_utc_ms: Option<i64>,
+    pub created_at_utc_ms: i64,
+    pub updated_at_utc_ms: i64,
+    pub completed_at_utc_ms: Option<i64>,
+}
+
 pub struct DataStore {
     connection: Mutex<Connection>,
     #[allow(dead_code)]
@@ -124,6 +157,108 @@ impl DataStore {
         )?;
         Ok(theme.to_string())
     }
+
+    pub fn list_tasks(&self, status: &str) -> Result<Vec<TaskDto>, DataError> {
+        validate_status(status)?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        read_tasks(&connection, status)
+    }
+
+    pub fn get_task(&self, id: &str) -> Result<TaskDto, DataError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        read_task(&connection, id)
+    }
+
+    pub fn create_task(&self, input: CreateTaskInput) -> Result<TaskDto, DataError> {
+        let title = validate_task_input(&input.title, &input.note)?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_active_category(&transaction, &input.category_id)?;
+        let now = utc_now_ms();
+        let device_id = read_device_id(&transaction)?;
+        let id = Uuid::new_v4().to_string();
+        transaction.execute(
+            "INSERT INTO tasks (id, title, note, category_id, status, created_at_utc_ms, updated_at_utc_ms, revision, updated_by_device_id)
+             VALUES (?1, ?2, ?3, ?4, 'todo', ?5, ?5, 1, ?6)",
+            params![id, title, input.note.trim(), input.category_id, now, device_id],
+        )?;
+        transaction.commit()?;
+        read_task(&connection, &id)
+    }
+
+    pub fn update_task(&self, input: UpdateTaskInput) -> Result<TaskDto, DataError> {
+        let title = validate_task_input(&input.title, &input.note)?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure_active_category(&transaction, &input.category_id)?;
+        let device_id = read_device_id(&transaction)?;
+        let changed = transaction.execute(
+            "UPDATE tasks SET title = ?1, note = ?2, category_id = ?3, updated_at_utc_ms = ?4,
+             revision = revision + 1, updated_by_device_id = ?5 WHERE id = ?6 AND deleted_at_utc_ms IS NULL",
+            params![title, input.note.trim(), input.category_id, utc_now_ms(), device_id, input.id],
+        )?;
+        if changed != 1 {
+            return Err(DataError("事项不存在或已删除".into()));
+        }
+        transaction.commit()?;
+        read_task(&connection, &input.id)
+    }
+
+    pub fn set_task_status(&self, id: &str, status: &str) -> Result<TaskDto, DataError> {
+        validate_status(status)?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let device_id = read_device_id(&transaction)?;
+        let now = utc_now_ms();
+        let completed_at = if status == "completed" {
+            Some(now)
+        } else {
+            None
+        };
+        let changed = transaction.execute(
+            "UPDATE tasks SET status = ?1, completed_at_utc_ms = ?2, updated_at_utc_ms = ?3,
+             revision = revision + 1, updated_by_device_id = ?4 WHERE id = ?5 AND deleted_at_utc_ms IS NULL",
+            params![status, completed_at, now, device_id, id],
+        )?;
+        if changed != 1 {
+            return Err(DataError("事项不存在或已删除".into()));
+        }
+        transaction.commit()?;
+        read_task(&connection, id)
+    }
+
+    pub fn delete_task(&self, id: &str) -> Result<(), DataError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
+            "UPDATE tasks SET deleted_at_utc_ms = ?1, updated_at_utc_ms = ?1, revision = revision + 1,
+             updated_by_device_id = ?2 WHERE id = ?3 AND deleted_at_utc_ms IS NULL",
+            params![utc_now_ms(), read_device_id(&transaction)?, id],
+        )?;
+        if changed != 1 {
+            return Err(DataError("事项不存在或已删除".into()));
+        }
+        transaction.commit()?;
+        Ok(())
+    }
 }
 
 fn initialize_database(connection: &mut Connection) -> Result<(), DataError> {
@@ -142,7 +277,12 @@ fn initialize_database(connection: &mut Connection) -> Result<(), DataError> {
          CREATE TABLE IF NOT EXISTS categories (
              id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL COLLATE NOCASE, color_id TEXT NOT NULL REFERENCES palette_colors(id),
              created_at_utc_ms INTEGER NOT NULL, updated_at_utc_ms INTEGER NOT NULL, revision INTEGER NOT NULL DEFAULT 1,
-             updated_by_device_id TEXT NOT NULL, deleted_at_utc_ms INTEGER, sort_order INTEGER NOT NULL DEFAULT 0, UNIQUE(name));",
+             updated_by_device_id TEXT NOT NULL, deleted_at_utc_ms INTEGER, sort_order INTEGER NOT NULL DEFAULT 0, UNIQUE(name));
+         CREATE TABLE IF NOT EXISTS tasks (
+             id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', category_id TEXT NOT NULL REFERENCES categories(id),
+             status TEXT NOT NULL CHECK(status IN ('todo', 'completed')), due_at_utc_ms INTEGER,
+             completed_at_utc_ms INTEGER, created_at_utc_ms INTEGER NOT NULL, updated_at_utc_ms INTEGER NOT NULL,
+             revision INTEGER NOT NULL DEFAULT 1, updated_by_device_id TEXT NOT NULL, deleted_at_utc_ms INTEGER);",
     )?;
     ensure_category_sort_order(&transaction)?;
     let now = utc_now_ms();
@@ -183,6 +323,10 @@ fn initialize_database(connection: &mut Connection) -> Result<(), DataError> {
     }
     transaction.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at_utc_ms) VALUES (1, ?1)",
+        params![now],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, applied_at_utc_ms) VALUES (2, ?1)",
         params![now],
     )?;
     transaction.commit()?;
@@ -262,6 +406,100 @@ fn ensure_category_sort_order(transaction: &rusqlite::Transaction<'_>) -> Result
     Ok(())
 }
 
+fn validate_task_input(title: &str, note: &str) -> Result<String, DataError> {
+    let title = title.trim();
+    let title_length = title.chars().count();
+    if !(1..=200).contains(&title_length) {
+        return Err(DataError("标题需为 1–200 个字符".into()));
+    }
+    if note.chars().count() > 2_000 {
+        return Err(DataError("备注最多 2,000 个字符".into()));
+    }
+    Ok(title.to_string())
+}
+
+fn validate_status(status: &str) -> Result<(), DataError> {
+    if matches!(status, "todo" | "completed") {
+        Ok(())
+    } else {
+        Err(DataError("不支持的事项状态".into()))
+    }
+}
+
+fn read_device_id(connection: &rusqlite::Transaction<'_>) -> Result<String, DataError> {
+    connection
+        .query_row(
+            "SELECT value FROM app_metadata WHERE key = 'device_id'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+}
+
+fn ensure_active_category(
+    connection: &rusqlite::Transaction<'_>,
+    category_id: &str,
+) -> Result<(), DataError> {
+    let exists = connection
+        .query_row(
+            "SELECT 1 FROM categories WHERE id = ?1 AND deleted_at_utc_ms IS NULL",
+            params![category_id],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if exists.is_none() {
+        return Err(DataError("请选择有效分类".into()));
+    }
+    Ok(())
+}
+
+fn read_task(connection: &Connection, id: &str) -> Result<TaskDto, DataError> {
+    connection.query_row(
+        "SELECT tasks.id, tasks.title, tasks.note, tasks.category_id, categories.name, palette_colors.value, tasks.status,
+         tasks.due_at_utc_ms, tasks.created_at_utc_ms, tasks.updated_at_utc_ms, tasks.completed_at_utc_ms FROM tasks
+         JOIN categories ON categories.id = tasks.category_id JOIN palette_colors ON palette_colors.id = categories.color_id
+         WHERE tasks.id = ?1 AND tasks.deleted_at_utc_ms IS NULL",
+        params![id], task_from_row,
+    ).optional()?.ok_or_else(|| DataError("事项不存在或已删除".into()))
+}
+
+fn read_tasks(connection: &Connection, status: &str) -> Result<Vec<TaskDto>, DataError> {
+    let ordering = if status == "todo" {
+        "CASE WHEN due_at_utc_ms IS NOT NULL AND due_at_utc_ms < ?2 THEN 0 ELSE 1 END, CASE WHEN due_at_utc_ms IS NULL THEN 1 ELSE 0 END, due_at_utc_ms ASC, tasks.updated_at_utc_ms DESC, tasks.id"
+    } else {
+        "tasks.completed_at_utc_ms DESC, tasks.updated_at_utc_ms DESC, tasks.id"
+    };
+    let query = format!(
+        "SELECT tasks.id, tasks.title, tasks.note, tasks.category_id, categories.name, palette_colors.value, tasks.status,
+         tasks.due_at_utc_ms, tasks.created_at_utc_ms, tasks.updated_at_utc_ms, tasks.completed_at_utc_ms FROM tasks
+         JOIN categories ON categories.id = tasks.category_id JOIN palette_colors ON palette_colors.id = categories.color_id
+         WHERE tasks.status = ?1 AND tasks.deleted_at_utc_ms IS NULL ORDER BY {ordering}"
+    );
+    let mut statement = connection.prepare(&query)?;
+    let rows = if status == "todo" {
+        statement.query_map(params![status, utc_now_ms()], task_from_row)?
+    } else {
+        statement.query_map(params![status], task_from_row)?
+    };
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskDto> {
+    Ok(TaskDto {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        note: row.get(2)?,
+        category_id: row.get(3)?,
+        category_name: row.get(4)?,
+        category_color: row.get(5)?,
+        status: row.get(6)?,
+        due_at_utc_ms: row.get(7)?,
+        created_at_utc_ms: row.get(8)?,
+        updated_at_utc_ms: row.get(9)?,
+        completed_at_utc_ms: row.get(10)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,5 +536,76 @@ mod tests {
         let second = read_bootstrap(&connection).unwrap();
         assert_eq!(first.device_id, second.device_id);
         assert_eq!(first.categories.len(), second.categories.len());
+    }
+
+    #[test]
+    fn tasks_keep_distinct_ids_and_support_the_complete_restore_delete_lifecycle() {
+        let store = in_memory_store();
+        let category_id = store.bootstrap().unwrap().categories[0].id.clone();
+        let first = store
+            .create_task(CreateTaskInput {
+                title: "同名事项".into(),
+                note: "备注".into(),
+                category_id: category_id.clone(),
+            })
+            .unwrap();
+        let second = store
+            .create_task(CreateTaskInput {
+                title: "同名事项".into(),
+                note: "".into(),
+                category_id,
+            })
+            .unwrap();
+        assert_ne!(first.id, second.id);
+        assert_eq!(store.list_tasks("todo").unwrap().len(), 2);
+        assert_eq!(
+            store
+                .set_task_status(&first.id, "completed")
+                .unwrap()
+                .status,
+            "completed"
+        );
+        assert_eq!(store.list_tasks("todo").unwrap().len(), 1);
+        assert_eq!(
+            store.set_task_status(&first.id, "todo").unwrap().status,
+            "todo"
+        );
+        store.delete_task(&first.id).unwrap();
+        assert!(store.get_task(&first.id).is_err());
+        assert_eq!(store.list_tasks("todo").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn tasks_validate_title_note_and_category_before_writing() {
+        let store = in_memory_store();
+        let category_id = store.bootstrap().unwrap().categories[0].id.clone();
+        assert!(store
+            .create_task(CreateTaskInput {
+                title: "   ".into(),
+                note: "".into(),
+                category_id: category_id.clone()
+            })
+            .is_err());
+        assert!(store
+            .create_task(CreateTaskInput {
+                title: "标题".into(),
+                note: "x".repeat(2_001),
+                category_id: category_id.clone()
+            })
+            .is_err());
+        assert!(store
+            .create_task(CreateTaskInput {
+                title: "标题".into(),
+                note: "".into(),
+                category_id: "missing".into()
+            })
+            .is_err());
+        assert!(store
+            .create_task(CreateTaskInput {
+                title: "标题".into(),
+                note: "".into(),
+                category_id
+            })
+            .is_ok());
     }
 }
