@@ -1,4 +1,5 @@
 import { FormEvent, type CSSProperties, type MouseEvent, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
@@ -12,6 +13,8 @@ type Task = { id: string; title: string; note: string; categoryId: string; categ
 type Page = "home" | "create" | "view" | "edit";
 
 const icon = (name: string) => `/icons/${name}`;
+const CONFIRM_TRANSITION_MS = 300;
+const TASK_STATUS_EXIT_MS = 600;
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>("light");
@@ -47,8 +50,8 @@ export default function App() {
   function showNotice(message: string) { setNotice(message); window.setTimeout(() => setNotice(""), 2400); }
   async function setWindowMode(next: WindowMode) { try { setMode(await invoke<WindowMode>("set_window_mode", { mode: next })); } catch (error) { showError(error); } }
   const cycleMode = () => void setWindowMode(mode === "mode-normal" ? "mode-topmost" : mode === "mode-topmost" ? "mode-desktop" : "mode-normal");
-  async function setTaskStatus(task: Task, next: Status) { try { await invoke<Task>("set_task_status", { id: task.id, status: next }); await refreshTasks(); setPage("home"); showNotice(next === "completed" ? "事项已完成" : "已移入待办"); } catch (error) { showError(error); } }
-  async function removeTask(task: Task) { if (!window.confirm(`删除“${task.title}”？`)) return; try { await invoke("delete_task", { id: task.id }); await refreshTasks(); setPage("home"); showNotice("事项已删除"); } catch (error) { showError(error); } }
+  async function setTaskStatus(task: Task, next: Status): Promise<boolean> { try { await invoke<Task>("set_task_status", { id: task.id, status: next }); await refreshTasks(); setPage("home"); showNotice(next === "completed" ? "事项已完成" : "已移入待办"); return true; } catch (error) { showError(error); return false; } }
+  async function removeTask(task: Task) { try { await invoke("delete_task", { id: task.id }); await refreshTasks(); setPage("home"); showNotice("事项已删除"); } catch (error) { showError(error); } }
   function openTask(task: Task) { setSelectedTask(task); setPage("view"); }
 
   return <main className="app-shell" data-theme={theme}>
@@ -60,7 +63,7 @@ export default function App() {
           <button className={status === "completed" ? "selected" : ""} onClick={() => setStatus("completed")}><span className="tab-count">{tasks.completed.length}</span>已完成</button>
         </div>
         <TaskList>
-          {visibleTasks.map((task) => <TaskRow key={task.id} task={task} onOpen={() => openTask(task)} onStatus={() => void setTaskStatus(task, task.status === "todo" ? "completed" : "todo")} onDelete={() => void removeTask(task)} />)}
+          {visibleTasks.map((task) => <TaskRow key={task.id} task={task} theme={theme} onOpen={() => openTask(task)} onEdit={() => { setSelectedTask(task); setPage("edit"); }} onStatus={() => setTaskStatus(task, task.status === "todo" ? "completed" : "todo")} onDelete={() => void removeTask(task)} />)}
           {!visibleTasks.length && <div className="empty-state"><img src={icon("tag_20_regular.svg")} alt="" /><p>{status === "todo" ? "还没有待办事项" : "还没有已完成事项"}</p><span>{status === "todo" ? "点击下方加号添加一条" : "完成事项后会显示在这里"}</span></div>}
         </TaskList>
       </section>
@@ -74,17 +77,158 @@ function Header({ mode, onCycle, onHide }: { mode: WindowMode; onCycle: () => vo
   return <header className="app-titlebar" data-tauri-drag-region onMouseDown={startWindowDrag}><button className={`icon-control pin pin-${mode.replace("mode-", "")} ${mode === "mode-topmost" ? "is-active" : ""}`} aria-label="切换窗口模式" onClick={onCycle}><img src={icon("pin_24_regular.svg")} alt="" /></button><h1 data-tauri-drag-region>MyLIST</h1><button className="icon-control close" aria-label="隐藏到托盘" onClick={onHide}><img src={icon("dismiss_20_regular.svg")} alt="" /></button></header>;
 }
 
-function TaskRow({ task, onOpen, onStatus, onDelete }: { task: Task; onOpen: () => void; onStatus: () => void; onDelete: () => void }) {
-  const actionIcon = task.status === "completed" ? "checkmark_20_regular.svg" : null;
-  return <article className={`task-row task-row-${task.status}`}>
-    <button className="task-status" aria-label={task.status === "todo" ? "完成事项" : "移入待办"} onClick={onStatus}>
+function TaskRow({ task, theme, onOpen, onEdit, onStatus, onDelete }: { task: Task; theme: Theme; onOpen: () => void; onEdit: () => void; onStatus: () => Promise<boolean>; onDelete: () => void }) {
+  const [confirming, setConfirming] = useState<"status" | "delete" | null>(null);
+  const [transitionLocked, setTransitionLocked] = useState(false);
+  const [collapseAfterTransition, setCollapseAfterTransition] = useState(false);
+  const [collapsing, setCollapsing] = useState<"status" | "delete" | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [tooltip, setTooltip] = useState<{ x: number; y: number } | null>(null);
+  const [statusExiting, setStatusExiting] = useState(false);
+  const statusRef = useRef<HTMLButtonElement>(null);
+  const deleteRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLButtonElement>(null);
+  const titleRef = useRef<HTMLSpanElement>(null);
+  const deleteLabelRef = useRef<HTMLSpanElement>(null);
+  const timerRef = useRef<number | null>(null);
+  const [deleteConfirmWidth, setDeleteConfirmWidth] = useState(64);
+  const completed = task.status === "completed";
+
+  useEffect(() => () => { if (timerRef.current) window.clearTimeout(timerRef.current); }, []);
+  useEffect(() => {
+    const labelWidth = deleteLabelRef.current?.scrollWidth ?? 0;
+    if (labelWidth) setDeleteConfirmWidth(Math.ceil(16 + 6 + labelWidth + 24));
+  }, []);
+  useEffect(() => { setConfirming(null); setCollapsing(null); setTransitionLocked(false); setMenuOpen(false); setStatusExiting(false); }, [task.status]);
+  useEffect(() => {
+    if (!transitionLocked && collapseAfterTransition) {
+      setCollapseAfterTransition(false);
+      closeConfirmation();
+    }
+  }, [collapseAfterTransition, transitionLocked]);
+  useEffect(() => {
+    if (!confirming) return;
+    const closeFromOutside = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (statusRef.current?.contains(target) || deleteRef.current?.contains(target)) return;
+      closeConfirmation();
+    };
+    window.addEventListener("pointerdown", closeFromOutside);
+    return () => window.removeEventListener("pointerdown", closeFromOutside);
+  }, [confirming]);
+
+  function collapseConfirmation(after?: () => void) {
+    if (!confirming || transitionLocked) return;
+    setTransitionLocked(true);
+    setCollapsing(confirming);
+    setConfirming(null);
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      setCollapsing(null);
+      setTransitionLocked(false);
+      after?.();
+    }, CONFIRM_TRANSITION_MS);
+  }
+  function switchConfirmation(next: "status" | "delete") {
+    if (!confirming || transitionLocked) return;
+    setTransitionLocked(true);
+    setCollapseAfterTransition(false);
+    setCollapsing(confirming);
+    setConfirming(next);
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => {
+      setCollapsing(null);
+      setTransitionLocked(false);
+    }, CONFIRM_TRANSITION_MS);
+  }
+  function lockTransition(next: "status" | "delete" | null) {
+    if (transitionLocked) return;
+    if (next === null && confirming) {
+      collapseConfirmation();
+      return;
+    }
+    setTransitionLocked(true);
+    setCollapsing(null);
+    setConfirming(next);
+    if (timerRef.current) window.clearTimeout(timerRef.current);
+    timerRef.current = window.setTimeout(() => { setCollapsing(null); setTransitionLocked(false); }, CONFIRM_TRANSITION_MS);
+  }
+  function closeConfirmation() { if (confirming) lockTransition(null); }
+  function handleStatus() {
+    if (transitionLocked) return;
+    setMenuOpen(false);
+    if (confirming === "status") {
+      setTransitionLocked(true);
+      setConfirming(null);
+      setCollapsing(null);
+      setStatusExiting(true);
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(() => {
+        void onStatus().then((changed) => {
+          if (!changed) { setStatusExiting(false); setTransitionLocked(false); }
+        });
+      }, TASK_STATUS_EXIT_MS);
+      return;
+    }
+    if (confirming === "delete") { switchConfirmation("status"); return; }
+    lockTransition("status");
+  }
+  function handleDelete() {
+    if (transitionLocked) return;
+    if (confirming === "delete") { onDelete(); return; }
+    if (confirming === "status") { switchConfirmation("delete"); return; }
+    lockTransition("delete");
+  }
+  function handleMenuToggle() {
+    if (transitionLocked) return;
+    if (confirming) {
+      collapseConfirmation(() => setMenuOpen(true));
+      return;
+    }
+    setMenuOpen((open) => !open);
+  }
+  function showTooltip() {
+    const title = titleRef.current;
+    if (!title || title.scrollWidth <= title.clientWidth) return;
+    const rect = title.getBoundingClientRect();
+    setTooltip({ x: rect.left, y: rect.bottom + 6 });
+  }
+  const statusLabel = completed ? "移入待办" : "已完成";
+  const statusIcon = completed ? "arrow_left_20_regular.svg" : "checkmark_20_regular.svg";
+
+  return <article className={`task-row task-row-${task.status} ${confirming === "status" ? "status-confirming" : ""} ${confirming === "delete" ? "delete-confirming" : ""} ${collapsing === "status" ? "status-collapsing" : ""} ${collapsing === "delete" ? "delete-collapsing" : ""} ${statusExiting ? `status-exiting status-exiting-${completed ? "left" : "right"}` : ""}`} style={{ "--delete-confirm-width": `${deleteConfirmWidth}px` } as CSSProperties} onMouseLeave={() => { setTooltip(null); if (statusExiting) return; if (transitionLocked) setCollapseAfterTransition(true); else closeConfirmation(); }}>
+    <button ref={statusRef} className="task-status" aria-label={confirming === "status" ? `确认${statusLabel}` : (completed ? "移入待办" : "完成事项")} aria-disabled={transitionLocked} onClick={handleStatus}>
       <span className="category-dot" style={{ "--category-color": task.categoryColor } as CSSProperties} />
-      <span className="task-status-action" aria-hidden="true">{actionIcon && <img src={icon(actionIcon)} alt="" />}</span>
+      <span className="task-status-action" aria-hidden="true"><img src={icon(statusIcon)} alt="" /></span>
+      <span className="task-status-confirm-icon" aria-hidden="true"><img src={icon(statusIcon)} alt="" /></span>
+      <span className="task-status-confirm-text">{statusLabel}</span>
     </button>
-    <button className="task-main" onClick={onOpen}><span className="task-title">{task.title}</span></button>
+    <button className="task-main" onClick={onOpen} onMouseEnter={showTooltip} onMouseLeave={() => setTooltip(null)}><span ref={titleRef} className="task-title">{task.title}</span></button>
     <span className="task-time" aria-label={task.dueAtUtcMs ? "截止时间" : undefined}>{formatTaskTime(task.dueAtUtcMs)}</span>
-    <button className="task-delete" aria-label="删除事项" onClick={onDelete}><img src={icon("delete_20_regular.svg")} alt="" /></button>
+    {completed ? <button ref={deleteRef} className="task-delete" aria-label={confirming === "delete" ? "确认删除事项" : "删除事项"} aria-disabled={transitionLocked} onClick={handleDelete}><img src={icon("delete_20_regular.svg")} alt="" /><span ref={deleteLabelRef}>删除</span></button> : <><button ref={menuRef} className={`task-menu-trigger ${menuOpen ? "open" : ""}`} aria-label="更多操作" aria-expanded={menuOpen} onClick={handleMenuToggle}><span>•••</span></button>{menuOpen && <TaskMenu anchor={menuRef.current} theme={theme} onEdit={() => { setMenuOpen(false); onEdit(); }} onDelete={() => { setMenuOpen(false); onDelete(); }} onDismiss={() => setMenuOpen(false)} />}</>}
+    {tooltip && <TaskTitleTooltip x={tooltip.x} y={tooltip.y} title={task.title} theme={theme} />}
   </article>;
+}
+
+function TaskMenu({ anchor, theme, onEdit, onDelete, onDismiss }: { anchor: HTMLButtonElement | null; theme: Theme; onEdit: () => void; onDelete: () => void; onDismiss: () => void }) {
+  const [position, setPosition] = useState({ left: 0, top: 0 });
+  useEffect(() => {
+    if (!anchor) return;
+    const update = () => {
+      const rect = anchor.getBoundingClientRect();
+      const menuHeight = 68;
+      setPosition({ left: Math.max(8, rect.right - 96), top: rect.bottom + menuHeight + 5 > window.innerHeight ? Math.max(8, rect.top - menuHeight - 5) : rect.bottom + 5 });
+    };
+    update(); window.addEventListener("resize", update); window.addEventListener("scroll", update, true);
+    const onPointer = (event: PointerEvent) => { if (!anchor.contains(event.target as Node)) onDismiss(); };
+    window.addEventListener("pointerdown", onPointer);
+    return () => { window.removeEventListener("resize", update); window.removeEventListener("scroll", update, true); window.removeEventListener("pointerdown", onPointer); };
+  }, [anchor, onDismiss]);
+  return createPortal(<div className="task-floating-menu" data-theme={theme} style={position} role="menu" onPointerDown={(event) => event.stopPropagation()}><button type="button" role="menuitem" onClick={onEdit}>编辑</button><button type="button" role="menuitem" onClick={onDelete}>删除</button></div>, document.body);
+}
+
+function TaskTitleTooltip({ x, y, title, theme }: { x: number; y: number; title: string; theme: Theme }) {
+  return createPortal(<div className="task-title-tooltip" data-theme={theme} style={{ left: x, top: y }} role="tooltip">{title}</div>, document.body);
 }
 
 function TaskList({ children }: { children: React.ReactNode }) {
@@ -123,7 +267,8 @@ function TaskList({ children }: { children: React.ReactNode }) {
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   };
-  return <div className="task-list-wrap"><div ref={listRef} className="task-list" aria-live="polite" onScroll={syncMetrics}>{children}</div>{maxScroll > 0 && <div className="task-scroll-track" aria-hidden="true"><button className="task-scroll-thumb" type="button" onMouseDown={beginThumbDrag} style={{ height: thumbHeight, transform: `translateY(${thumbOffset}px)` }} /></div>}</div>;
+  const scrollable = maxScroll > 0;
+  return <div className="task-list-wrap"><div ref={listRef} className={`task-list${scrollable ? " has-scrollbar" : ""}`} aria-live="polite" onScroll={syncMetrics}>{children}</div>{scrollable && <div className="task-scroll-track" aria-hidden="true"><button className="task-scroll-thumb" type="button" onMouseDown={beginThumbDrag} style={{ height: thumbHeight, transform: `translateY(${thumbOffset}px)` }} /></div>}</div>;
 }
 
 function formatTaskTime(dueAtUtcMs: number | null) {
