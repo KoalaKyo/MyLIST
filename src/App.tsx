@@ -10,7 +10,7 @@ type WindowMode = "mode-topmost" | "mode-normal" | "mode-desktop";
 type Category = { id: string; name: string; colorId: string; color: string };
 type BootstrapData = { deviceId: string; theme: Theme; categories: Category[]; palette: Array<{ id: string; row: number; column: number; value: string }> };
 type Task = { id: string; title: string; note: string; categoryId: string; categoryName: string; categoryColor: string; status: Status; dueAtUtcMs: number | null; createdAtUtcMs: number; updatedAtUtcMs: number; completedAtUtcMs: number | null };
-type Page = "home" | "create" | "view" | "edit";
+type Page = "home" | "create" | "view" | "edit" | "settings";
 
 const icon = (name: string) => `/icons/${name}`;
 const CONFIRM_TRANSITION_MS = 300;
@@ -49,6 +49,7 @@ export default function App() {
   function showError(error: unknown) { setNotice(error instanceof Error ? error.message : String(error)); }
   function showNotice(message: string) { setNotice(message); window.setTimeout(() => setNotice(""), 2400); }
   async function setWindowMode(next: WindowMode) { try { setMode(await invoke<WindowMode>("set_window_mode", { mode: next })); } catch (error) { showError(error); } }
+  async function setThemeSetting(next: Theme) { try { const saved = await invoke<Theme>("save_theme_setting", { theme: next }); setTheme(saved); setBootstrap((current) => current ? { ...current, theme: saved } : current); showNotice(saved === "dark" ? "已切换为黑暗模式" : "已切换为明亮模式"); } catch (error) { showError(error); } }
   const cycleMode = () => void setWindowMode(mode === "mode-normal" ? "mode-topmost" : mode === "mode-topmost" ? "mode-desktop" : "mode-normal");
   async function setTaskStatus(task: Task, next: Status): Promise<boolean> { try { await invoke<Task>("set_task_status", { id: task.id, status: next }); await refreshTasks(); setPage("home"); showNotice(next === "completed" ? "事项已完成" : "已移入待办"); return true; } catch (error) { showError(error); return false; } }
   async function removeTask(task: Task) { try { await invoke("delete_task", { id: task.id }); await refreshTasks(); setPage("home"); showNotice("事项已删除"); } catch (error) { showError(error); } }
@@ -67,14 +68,62 @@ export default function App() {
           {!visibleTasks.length && <div className="empty-state"><img src={icon("tag_20_regular.svg")} alt="" /><p>{status === "todo" ? "还没有待办事项" : "还没有已完成事项"}</p><span>{status === "todo" ? "点击下方加号添加一条" : "完成事项后会显示在这里"}</span></div>}
         </TaskList>
       </section>
-      <footer className="app-footer"><button className="icon-control" aria-label="设置" onClick={() => showNotice("设置将在阶段 5 提供")}><img src={icon("settings_24_regular.svg")} alt="" /></button><button className="add-control" aria-label="添加事项" onClick={() => { setSelectedTask(null); setPage("create"); }}><img src={icon("add_24_regular.svg")} alt="" /></button><button className="resize-grip" aria-label="拖动调整窗口大小" onMouseDown={startResize}><span>{Array.from({ length: 6 }, (_, index) => <i key={index} />)}</span></button></footer>
-    </> : page === "view" && selectedTask ? <TaskView task={selectedTask} onBack={() => setPage("home")} onEdit={() => setPage("edit")} onStatus={() => void setTaskStatus(selectedTask, selectedTask.status === "todo" ? "completed" : "todo")} onDelete={() => void removeTask(selectedTask)} /> : <TaskForm title={formMode} task={page === "edit" ? selectedTask : null} categories={categories} onBack={() => setPage(selectedTask ? "view" : "home")} onSave={async (input) => { try { const editing = page === "edit" && selectedTask; await (editing ? invoke<Task>("update_task", { input: { ...input, id: selectedTask.id } }) : invoke<Task>("create_task", { input })); await refreshTasks(); setSelectedTask(null); setStatus("todo"); setPage("home"); showNotice(editing ? "事项已保存" : "事项已添加"); } catch (error) { showError(error); } }} />}
+      <footer className="app-footer"><button className="icon-control" aria-label="设置" onClick={() => setPage("settings")}><img src={icon("settings_24_regular.svg")} alt="" /></button><button className="add-control" aria-label="添加事项" onClick={() => { setSelectedTask(null); setPage("create"); }}><img src={icon("add_24_regular.svg")} alt="" /></button><button className="resize-grip" aria-label="拖动调整窗口大小" onMouseDown={startResize}><span>{Array.from({ length: 6 }, (_, index) => <i key={index} />)}</span></button></footer>
+    </> : page === "settings" ? <Settings theme={theme} onThemeChange={setThemeSetting} onBack={() => setPage("home")} /> : page === "view" && selectedTask ? <TaskView task={selectedTask} onBack={() => setPage("home")} onEdit={() => setPage("edit")} onStatus={() => void setTaskStatus(selectedTask, selectedTask.status === "todo" ? "completed" : "todo")} onDelete={() => void removeTask(selectedTask)} /> : <TaskForm title={formMode} task={page === "edit" ? selectedTask : null} categories={categories} onBack={() => setPage(selectedTask ? "view" : "home")} onSave={async (input) => { try { const editing = page === "edit" && selectedTask; await (editing ? invoke<Task>("update_task", { input: { ...input, id: selectedTask.id } }) : invoke<Task>("create_task", { input })); await refreshTasks(); setSelectedTask(null); setStatus("todo"); setPage("home"); showNotice(editing ? "事项已保存" : "事项已添加"); } catch (error) { showError(error); } }} />}
     {notice && <div className="toast" role="status">{notice}</div>}
   </main>;
 }
 
 function Header({ mode, onCycle, onHide }: { mode: WindowMode; onCycle: () => void; onHide: () => void }) {
   return <header className="app-titlebar" data-tauri-drag-region onMouseDown={startWindowDrag}><button className={`icon-control pin pin-${mode.replace("mode-", "")} ${mode === "mode-topmost" ? "is-active" : ""}`} aria-label="切换窗口模式" onClick={onCycle}><img src={icon("pin_24_regular.svg")} alt="" /></button><h1 data-tauri-drag-region>MyLIST</h1><button className="icon-control close" aria-label="隐藏到托盘" onClick={onHide}><img src={icon("dismiss_20_regular.svg")} alt="" /></button></header>;
+}
+
+function Settings({ theme, onThemeChange, onBack }: { theme: Theme; onThemeChange: (theme: Theme) => void; onBack: () => void }) {
+  const [section, setSection] = useState<"general" | "categories" | "data">("general");
+  return <section className="sheet settings-sheet">
+    <SheetHeader title="设置" onBack={onBack} />
+    <nav className="mode-tabs settings-tabs" role="tablist" aria-label="设置分类">
+      <button className={section === "general" ? "selected" : ""} onClick={() => setSection("general")}>常规</button>
+      <button className={section === "categories" ? "selected" : ""} onClick={() => setSection("categories")}>分类</button>
+      <button className={section === "data" ? "selected" : ""} onClick={() => setSection("data")}>数据</button>
+    </nav>
+    <div className="settings-content">
+      {section === "general" ? <div className="settings-block">
+        <label htmlFor="theme-setting">外观</label>
+        <ThemeDropdown value={theme} onChange={onThemeChange} />
+      </div> : <div className="settings-placeholder">{section === "categories" ? "分类管理将在本阶段下一模块提供" : "数据导入导出将在阶段 8 提供"}</div>}
+    </div>
+  </section>;
+}
+
+function ThemeDropdown({ value, onChange }: { value: Theme; onChange: (theme: Theme) => void }) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({ left: 0, top: 0, width: 0 });
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const themeLabel = value === "dark" ? "黑暗" : "明亮";
+  useEffect(() => {
+    if (!open || !triggerRef.current) return;
+    const updatePosition = () => {
+      const rect = triggerRef.current!.getBoundingClientRect();
+      const menuHeight = 72;
+      setPosition({ left: rect.left, top: rect.bottom + menuHeight + 5 > window.innerHeight ? Math.max(8, rect.top - menuHeight - 5) : rect.bottom + 5, width: rect.width });
+    };
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (!triggerRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("pointerdown", dismiss);
+    return () => { window.removeEventListener("resize", updatePosition); window.removeEventListener("pointerdown", dismiss); };
+  }, [open]);
+  return <>
+    <button ref={triggerRef} id="theme-setting" className={`settings-theme-trigger ${open ? "open" : ""}`} aria-haspopup="listbox" aria-expanded={open} onClick={() => setOpen((current) => !current)}>{themeLabel}<img src={icon("chevron_right_20_regular.svg")} alt="" /></button>
+    {open && createPortal(<div ref={menuRef} className="settings-theme-menu" data-theme={value} role="listbox" aria-label="外观" style={{ left: position.left, top: position.top, width: position.width }}>
+      {(["light", "dark"] as Theme[]).map((option) => <button key={option} role="option" aria-selected={value === option} className={value === option ? "selected" : ""} onClick={() => { onChange(option); setOpen(false); }}>{option === "light" ? "明亮" : "黑暗"}</button>)}
+    </div>, document.body)}
+  </>;
 }
 
 function TaskRow({ task, theme, onOpen, onEdit, onStatus, onDelete }: { task: Task; theme: Theme; onOpen: () => void; onEdit: () => void; onStatus: () => Promise<boolean>; onDelete: () => void }) {
