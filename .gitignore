@@ -11,6 +11,8 @@ node_modules
 dist
 dist-ssr
 src-tauri/target
+src-tauri/target-i18n
+src-tauri/target-language
 *.local
 
 # Editor directories and files

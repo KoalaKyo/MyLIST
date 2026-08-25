@@ -8,10 +8,44 @@
 use windows_sys::Win32::{
     Foundation::{HWND, RECT},
     Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn},
-    UI::{HiDpi::GetDpiForWindow, WindowsAndMessaging::GetWindowRect},
+    UI::{
+        HiDpi::GetDpiForWindow,
+        WindowsAndMessaging::{
+            GetWindowLongPtrW, GetWindowRect, SetWindowLongPtrW, SetWindowPos, GWL_STYLE,
+            SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_MAXIMIZEBOX,
+        },
+    },
 };
 
 const CORNER_RADIUS_DIP: u32 = 8;
+
+/// Prevent title-bar double-click and snap-to-top from entering a maximized
+/// state while preserving the resizable frame used by MyLIST.
+pub fn disable_maximization(window_handle: HWND) -> Result<(), String> {
+    let style = unsafe { GetWindowLongPtrW(window_handle, GWL_STYLE) };
+    if style == 0 {
+        return Err("无法读取原生窗口样式".to_string());
+    }
+
+    let maximizable_style = WS_MAXIMIZEBOX as isize;
+    if style & maximizable_style == 0 {
+        return Ok(());
+    }
+
+    unsafe {
+        SetWindowLongPtrW(window_handle, GWL_STYLE, style & !maximizable_style);
+        SetWindowPos(
+            window_handle,
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
+        );
+    }
+    Ok(())
+}
 
 pub fn apply_rounded_region(window_handle: HWND) -> Result<(), String> {
     let mut rect = RECT {
