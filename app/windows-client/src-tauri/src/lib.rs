@@ -35,6 +35,23 @@ const DESKTOP_MODE: &str = "mode-desktop";
 const OPEN_MAIN: &str = "open-main";
 const QUIT: &str = "quit";
 
+#[cfg(target_os = "windows")]
+fn show_startup_data_error(message: &str) {
+    use std::iter::once;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+    let text: Vec<u16> = message.encode_utf16().chain(once(0)).collect();
+    let title: Vec<u16> = "MyLIST".encode_utf16().chain(once(0)).collect();
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_ICONERROR | MB_OK,
+        );
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WindowMode {
     Topmost,
@@ -915,9 +932,12 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             let _ = restore_for_current_mode(app);
         }))
-        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let store = DataStore::open(app.handle()).map_err(|error| error.to_string())?;
+            let store = DataStore::open(app.handle()).map_err(|error| {
+                #[cfg(target_os = "windows")]
+                show_startup_data_error(&error.to_string());
+                error.to_string()
+            })?;
             if store.startup_enabled().unwrap_or(true) {
                 let _ = app.autolaunch().enable();
             }

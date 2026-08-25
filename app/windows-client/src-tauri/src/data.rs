@@ -58,6 +58,26 @@ impl From<rusqlite::Error> for DataError {
     }
 }
 
+/// Startup must never expose an untrusted SQLite error verbatim or imply that
+/// recovery has changed the user's data. The caller can safely show this text
+/// before the renderer and locale settings are available.
+fn database_open_error(error: impl std::fmt::Display) -> DataError {
+    let detail = error.to_string().to_ascii_lowercase();
+    if detail.contains("not a database")
+        || detail.contains("database disk image is malformed")
+        || detail.contains("file is encrypted")
+        || detail.contains("malformed")
+    {
+        return DataError(
+            "本地数据文件无法验证，应用未修改任何数据。请先备份本地数据后再联系支持。".into(),
+        );
+    }
+
+    DataError(
+        "无法打开本地数据，应用未修改任何数据。请检查磁盘空间和本地目录访问权限后重试。".into(),
+    )
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaletteColorDto {
@@ -247,8 +267,8 @@ impl DataStore {
         fs::create_dir_all(&data_directory)
             .map_err(|error| DataError(format!("无法创建本地数据目录：{error}")))?;
         let database_path = data_directory.join(DATABASE_FILE);
-        let mut connection = Connection::open(&database_path)?;
-        initialize_database(&mut connection)?;
+        let mut connection = Connection::open(&database_path).map_err(database_open_error)?;
+        initialize_database(&mut connection).map_err(database_open_error)?;
         Ok(Self {
             connection: Mutex::new(connection),
             database_path,
@@ -857,7 +877,11 @@ impl DataStore {
 
 fn initialize_database(connection: &mut Connection) -> Result<(), DataError> {
     connection.execute_batch(
-        "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;",
+        "PRAGMA foreign_keys = ON;
+         PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = FULL;
+         PRAGMA trusted_schema = OFF;
+         PRAGMA secure_delete = ON;",
     )?;
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     transaction.execute_batch(
@@ -1940,6 +1964,14 @@ mod tests {
             database_path: PathBuf::new(),
         }
     }
+
+    #[test]
+    fn corrupted_database_errors_do_not_expose_driver_details_or_claim_recovery() {
+        let message = database_open_error("file is not a database: untrusted path").to_string();
+        assert!(message.contains("未修改任何数据"));
+        assert!(!message.contains("untrusted path"));
+    }
+
     #[test]
     fn first_bootstrap_seeds_a_device_palette_and_eight_categories() {
         let bootstrap = in_memory_store().bootstrap().unwrap();
