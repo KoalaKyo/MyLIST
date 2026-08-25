@@ -1,0 +1,30 @@
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Node / Rust build artifacts
+**/node_modules/
+**/dist/
+**/src-tauri/target/
+**/src-tauri/target-i18n/
+**/src-tauri/target-language/
+
+# Local app data, exported backups, signing materials and private configuration
+*.dtodo
+*.dtodo.json
+*.pfx
+*.p12
+*.cer
+*.key
+*.pem
+*.local
+.env
+.env.*
+!*.env.example
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
