@@ -356,26 +356,12 @@ impl DataStore {
         })
     }
 
-    pub fn read_plaintext_import(
-        &self,
-        path: &Path,
-    ) -> Result<(PlaintextExportDto, String), DataError> {
-        let encoded =
-            fs::read(path).map_err(|error| DataError(format!("无法读取导入文件：{error}")))?;
-        let file_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("导入数据.dtodo.json")
-            .to_string();
-        self.read_plaintext_import_bytes(&encoded, file_name)
-    }
-
     pub fn read_plaintext_import_bytes(
         &self,
         encoded: &[u8],
         file_name: String,
     ) -> Result<(PlaintextExportDto, String), DataError> {
-        let package: PlaintextExportDto = serde_json::from_slice(&encoded)
+        let package: PlaintextExportDto = serde_json::from_slice(encoded)
             .map_err(|_| DataError("导入文件格式无效或已损坏".into()))?;
         validate_import_package(&package)?;
         Ok((package, file_name))
@@ -508,14 +494,6 @@ impl DataStore {
             params![THEME_KEY, theme, utc_now_ms()],
         )?;
         Ok(theme.to_string())
-    }
-
-    pub fn locale(&self) -> Result<String, DataError> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| DataError("本地数据连接不可用".into()))?;
-        read_locale(&connection)
     }
 
     pub fn save_locale(&self, locale: &str) -> Result<String, DataError> {

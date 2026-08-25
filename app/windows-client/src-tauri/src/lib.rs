@@ -364,7 +364,7 @@ fn start_window_drag(window: tauri::WebviewWindow) -> Result<(), String> {
             ReleaseCapture();
             SendMessageW(native_handle, WM_NCLBUTTONDOWN, HTCAPTION as usize, 0);
         }
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -385,7 +385,7 @@ fn start_window_resize(window: tauri::WebviewWindow) -> Result<(), String> {
             ReleaseCapture();
             SendMessageW(native_handle, WM_NCLBUTTONDOWN, HTBOTTOMRIGHT as usize, 0);
         }
-        return Ok(());
+        Ok(())
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -813,7 +813,7 @@ fn delete_task(store: tauri::State<'_, DataStore>, id: String) -> Result<(), Str
 }
 
 fn configure_tray(app: &tauri::App) -> tauri::Result<()> {
-    let labels = native_labels(&app.handle());
+    let labels = native_labels(app.handle());
     let open_main_item = MenuItem::with_id(app, OPEN_MAIN, labels.open_main, true, None::<&str>)?;
     let topmost_item =
         CheckMenuItem::with_id(app, TOPMOST_MODE, labels.topmost, true, false, None::<&str>)?;
