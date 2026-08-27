@@ -4,6 +4,7 @@ mod crypto;
 mod data;
 #[cfg(target_os = "windows")]
 mod desktop_mode;
+mod mcp;
 mod native_i18n;
 #[cfg(target_os = "windows")]
 mod window_shape;
@@ -238,6 +239,56 @@ fn read_window_mode(app: &AppHandle) -> Result<WindowMode, String> {
     Ok(data.mode)
 }
 
+fn persist_window_state_for(
+    app: &AppHandle,
+    position: Option<(i32, i32)>,
+    size: Option<(u32, u32)>,
+) {
+    #[cfg(target_os = "windows")]
+    if auto_hide::is_collapsed_or_animating(app) {
+        return;
+    }
+    let Some(store) = app.try_state::<DataStore>() else {
+        return;
+    };
+    let (Some((x, y)), Some((width, height))) = (position, size) else {
+        return;
+    };
+    let mode = read_window_mode(app)
+        .unwrap_or(WindowMode::Normal)
+        .id()
+        .to_string();
+    let _ = store.save_window_state(&data::WindowStateDto {
+        x,
+        y,
+        width,
+        height,
+        mode,
+    });
+}
+
+fn persist_webview_window_state(window: &tauri::WebviewWindow) {
+    persist_window_state_for(
+        window.app_handle(),
+        window.outer_position().ok().map(|value| (value.x, value.y)),
+        window
+            .outer_size()
+            .ok()
+            .map(|value| (value.width, value.height)),
+    );
+}
+
+fn persist_window_state(window: &tauri::Window) {
+    persist_window_state_for(
+        window.app_handle(),
+        window.outer_position().ok().map(|value| (value.x, value.y)),
+        window
+            .outer_size()
+            .ok()
+            .map(|value| (value.width, value.height)),
+    );
+}
+
 fn synchronize_tray_checks(app: &AppHandle, mode: WindowMode) {
     let controls_state = app.state::<TrayModeControlsState>();
     let controls = match controls_state.controls.lock() {
@@ -350,6 +401,9 @@ fn set_window_mode(app: AppHandle, mode: String) -> Result<String, String> {
     let mode = WindowMode::from_id(&mode).ok_or_else(|| "不支持的窗口模式".to_string())?;
     let current_mode = apply_window_mode(&app, mode)?;
     publish_window_mode(&app, current_mode);
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        persist_webview_window_state(&window);
+    }
     Ok(current_mode.id().to_string())
 }
 
@@ -938,6 +992,7 @@ pub fn run() {
                 show_startup_data_error(&error.to_string());
                 error.to_string()
             })?;
+            let saved_window_state = store.window_state().ok().flatten();
             if store.startup_enabled().unwrap_or(true) {
                 let _ = app.autolaunch().enable();
             }
@@ -945,6 +1000,13 @@ pub fn run() {
             native_i18n::ensure_external_locale_files(app.handle())?;
             #[cfg(target_os = "windows")]
             if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+                if let Some(saved) = saved_window_state.as_ref() {
+                    let _ = window.set_size(tauri::PhysicalSize::new(
+                        saved.width.max(350),
+                        saved.height.max(530),
+                    ));
+                    let _ = window.set_position(tauri::PhysicalPosition::new(saved.x, saved.y));
+                }
                 let native_handle = desktop_mode::top_level_window(
                     window.hwnd().map_err(|error| error.to_string())?.0,
                 );
@@ -952,6 +1014,12 @@ pub fn run() {
                 let _ = window_shape::disable_maximization(native_handle);
                 let _ = window_shape::apply_rounded_region(native_handle);
                 auto_hide::start_cursor_monitor(app.handle().clone(), native_handle);
+                if let Some(saved) = saved_window_state.as_ref() {
+                    if let Some(mode) = WindowMode::from_id(&saved.mode) {
+                        let _ = apply_window_mode(app.handle(), mode);
+                        publish_window_mode(app.handle(), mode);
+                    }
+                }
             }
             configure_tray(app)?;
             Ok(())
@@ -963,12 +1031,14 @@ pub fn run() {
                 if let Ok(handle) = window.hwnd() {
                     auto_hide::cancel_and_restore(window.app_handle(), handle.0);
                 }
+                persist_window_state(window);
                 let _ = window.hide();
             }
             WindowEvent::Moved(_) =>
             {
                 #[cfg(target_os = "windows")]
                 if let Ok(handle) = window.hwnd() {
+                    persist_window_state(window);
                     let mode = read_window_mode(window.app_handle()).unwrap_or(WindowMode::Normal);
                     auto_hide::on_window_moved(
                         window.app_handle().clone(),
@@ -977,13 +1047,13 @@ pub fn run() {
                     );
                 }
             }
-            WindowEvent::Resized(_) =>
-            {
+            WindowEvent::Resized(_) => {
                 #[cfg(target_os = "windows")]
                 if let Ok(window_handle) = window.hwnd() {
                     let native_handle = desktop_mode::top_level_window(window_handle.0);
                     let _ = window_shape::apply_rounded_region(native_handle);
                 }
+                persist_window_state(window);
             }
             _ => {}
         })
