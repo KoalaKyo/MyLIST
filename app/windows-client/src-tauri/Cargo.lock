@@ -560,8 +560,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
  "serde",
+ "wasm-bindgen",
  "windows-link 0.2.1",
 ]
 
@@ -5013,11 +5015,12 @@ dependencies = [
 
 [[package]]
 name = "windows-client"
-version = "0.1.0"
+version = "1.2.0"
 dependencies = [
  "aes-gcm",
  "argon2",
  "base64 0.22.1",
+ "chrono",
  "rand",
  "rusqlite",
  "serde",

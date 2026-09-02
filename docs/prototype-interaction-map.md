@@ -1,56 +1,36 @@
-# 桌面待办 HTML 原型交互说明
+# Desktop prototype interaction map
 
-## 交付范围
+The React and Vite prototype in app/prototype was used to validate the compact Windows desktop-widget layout and its core interaction model. Its data is held in page memory and resets when the page reloads.
 
-原型位于 `app/prototype`，采用 React + Vite 实现，用于验证 360 × 520 DIP Windows 桌面小组件的视觉形态和核心交互。所有数据只保存在当前页面内存中；刷新页面会恢复为示例数据。
+## Main window
 
-## 主界面
-
-| 区域 | 操作 | 原型反馈 |
+| Area | Interaction | Result |
 | --- | --- | --- |
-| 标题栏置顶图标 | 单击 | 在“桌面模式”和“置顶模式”之间切换，并显示状态提示 |
-| 设置图标 | 单击 | 打开设置抽屉 |
-| 关闭图标 | 单击 | 按 Windows 客户端逻辑模拟最小化到系统托盘 |
-| 待办 / 已完成 | 单击标签 | 切换列表，并实时显示对应数量 |
-| 待办事项圆圈 | 单击 | 标记完成，自动移入“已完成”列表 |
-| 待办事项正文 | 单击 | 打开编辑面板 |
-| 行内编辑 / 删除 | 悬停任务后单击 | 编辑任务或打开删除确认框 |
-| 已完成事项圆圈 / 恢复图标 | 单击 | 恢复为待办并回到待办标签 |
-| 添加事项 | 单击 | 打开新增任务面板 |
-| 右下角六点拖拽柄 | 按住并拖动 | 以右下角为基准调整窗口宽高；最小尺寸为 320 × 360 DIP。六点按 1–2–3 行排列，直角位于右下角。 |
+| Pin icon | Click | Switch between desktop and always-on-top behavior |
+| Settings icon | Click | Open settings |
+| Close icon | Click | Simulate minimizing to the system tray |
+| Pending / Completed tabs | Click | Switch task lists and update counts |
+| Task completion control | Click | Complete or restore a task |
+| Task content | Click | Open the edit view |
+| Add button | Click | Open the task creation view |
+| Bottom-right resize handle | Drag | Resize from the lower-right corner |
 
-## 新增与编辑
+## Task creation and editing
 
-- 标题必填，空标题保存时显示校验错误。
-- 支持备注、类型、截止时间、颜色和单次提醒。
-- 颜色可跟随类型默认色，也可覆盖为单任务颜色。
-- 保存后列表数量、任务内容和状态即时更新。
+- A title is required.
+- Tasks support notes, category, due time, and color.
+- Saving updates the list and counts immediately.
+- Completed tasks can be restored.
 
-## 设置抽屉
+## Settings
 
-### 常规
+- Appearance includes system, light, and dark themes.
+- Categories can be created, renamed, recolored, and removed subject to system-category rules.
+- Data workflows cover plaintext export, encrypted export, import preview, merge, and replace.
 
-- 主题可选择“跟随系统 / 明亮 / 黑暗”，只在设置中提供入口。
-- “随 Windows 启动”和通知设置为真实感交互模拟。
-- 设置通过底部“取消 / 保存设置”返回；取消会丢弃本次草稿，保存后才应用更改。
+## Layout and accessibility
 
-### 类型与颜色
-
-- 可添加、重命名和删除非系统类型。
-- 可编辑非系统颜色；“未分类”和雾灰作为系统保留项。
-- 色板采用雾灰、湖蓝、松绿、琥珀、珊瑚红和鸢尾紫，并统一使用圆形色样。
-
-### 数据
-
-- 导出提供“密码加密文件”和“明文 JSON”两种选择；加密密码少于 10 个字符时阻止继续。
-- 导入演示“选择文件 → 合并预检 → 确认合并 → 结果”的完整路径。
-- 预检展示新增、更新、保留、删除和跳过数量，并提示导入前快照。
-
-## 尺寸与可访问性
-
-- 底栏不显示“桌面模式”或“置顶模式”文字；置顶状态由标题栏图钉本身表达。设置图标固定在左下角。
-
-- 默认目标尺寸：360 × 520。
-- 最小验证尺寸：320 × 360；列表及抽屉内容可滚动，核心操作不被裁切。
-- 交互控件具有键盘焦点样式和可读名称。
-- 支持系统减少动态效果设置。
+- The default target size is 360 × 520 DIP.
+- Compact layouts keep primary actions reachable and allow internal scrolling where required.
+- Interactive controls expose focus states and accessible labels.
+- Reduced-motion preferences are respected.

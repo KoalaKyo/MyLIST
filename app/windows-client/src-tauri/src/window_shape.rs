@@ -12,28 +12,31 @@ use windows_sys::Win32::{
         HiDpi::GetDpiForWindow,
         WindowsAndMessaging::{
             GetWindowLongPtrW, GetWindowRect, SetWindowLongPtrW, SetWindowPos, GWL_STYLE,
-            SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_MAXIMIZEBOX,
+            SWP_FRAMECHANGED, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION, WS_MAXIMIZEBOX,
+            WS_MINIMIZEBOX, WS_SYSMENU,
         },
     },
 };
 
 const CORNER_RADIUS_DIP: u32 = 8;
 
-/// Prevent title-bar double-click and snap-to-top from entering a maximized
-/// state while preserving the resizable frame used by MyLIST.
+/// Remove the native title bar and window controls while preserving the
+/// resizable frame used by MyLIST. Tauri's transparent WebView can otherwise
+/// reveal these native pixels whenever the app loses focus.
 pub fn disable_maximization(window_handle: HWND) -> Result<(), String> {
     let style = unsafe { GetWindowLongPtrW(window_handle, GWL_STYLE) };
     if style == 0 {
         return Err("无法读取原生窗口样式".to_string());
     }
 
-    let maximizable_style = WS_MAXIMIZEBOX as isize;
-    if style & maximizable_style == 0 {
+    let native_decoration_bits =
+        (WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX) as isize;
+    if style & native_decoration_bits == 0 {
         return Ok(());
     }
 
     unsafe {
-        SetWindowLongPtrW(window_handle, GWL_STYLE, style & !maximizable_style);
+        SetWindowLongPtrW(window_handle, GWL_STYLE, style & !native_decoration_bits);
         SetWindowPos(
             window_handle,
             std::ptr::null_mut(),

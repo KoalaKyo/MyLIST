@@ -5,15 +5,20 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use chrono::{Datelike, Months, TimeZone, Utc};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 const DATABASE_FILE: &str = "mylist.sqlite3";
+const INSTALLER_LOCALE_FILE: &str = ".installer-locale";
 const THEME_KEY: &str = "theme";
 const STARTUP_ENABLED_KEY: &str = "startup_enabled";
 const LOCALE_KEY: &str = "locale";
+const MCP_ENABLED_KEY: &str = "mcp_enabled";
+const INTERFACE_TRANSPARENCY_KEY: &str = "interface_transparency";
+const WINDOW_STATE_KEY: &str = "window_state";
 const DEFAULT_LOCALE: &str = "zh-CN";
 
 // Approved 3 × 8 palette: light / medium / dark.
@@ -78,7 +83,7 @@ fn database_open_error(error: impl std::fmt::Display) -> DataError {
     )
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaletteColorDto {
     pub id: String,
@@ -87,7 +92,7 @@ pub struct PaletteColorDto {
     pub value: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CategoryDto {
     pub id: String,
@@ -96,6 +101,23 @@ pub struct CategoryDto {
     pub name_override: Option<String>,
     pub color_id: String,
     pub color: String,
+    pub revision: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryDeletePreviewDto {
+    pub category: CategoryDto,
+    pub task_count: i64,
+    pub migration_targets: Vec<CategoryDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpDeleteResultDto {
+    pub id: String,
+    pub deleted: bool,
+    pub migrated_task_count: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -105,8 +127,20 @@ pub struct BootstrapDto {
     pub theme: String,
     pub locale: String,
     pub startup_enabled: bool,
+    pub mcp_enabled: bool,
+    pub interface_transparency: u8,
     pub categories: Vec<CategoryDto>,
     pub palette: Vec<PaletteColorDto>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowStateDto {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+    pub mode: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -142,7 +176,7 @@ pub struct UpdateCategoryInput {
     pub color_id: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskDto {
     pub id: String,
@@ -155,9 +189,21 @@ pub struct TaskDto {
     pub category_color: String,
     pub status: String,
     pub due_at_utc_ms: Option<i64>,
+    pub recurrence_json: Option<String>,
     pub created_at_utc_ms: i64,
     pub updated_at_utc_ms: i64,
     pub completed_at_utc_ms: Option<i64>,
+    pub revision: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecurrenceConfig {
+    pub interval: u16,
+    pub unit: String,
+    pub action: String,
+    #[serde(default)]
+    pub base_title: String,
 }
 
 /// Stable, device-independent business snapshot used by `.dtodo.json` exports.
@@ -211,6 +257,8 @@ pub struct ExportTaskDto {
     pub category_id: String,
     pub status: String,
     pub due_at_utc_ms: Option<i64>,
+    #[serde(default)]
+    pub recurrence_json: Option<String>,
     pub completed_at_utc_ms: Option<i64>,
     pub created_at_utc_ms: i64,
     pub updated_at_utc_ms: i64,
@@ -269,6 +317,7 @@ impl DataStore {
         let database_path = data_directory.join(DATABASE_FILE);
         let mut connection = Connection::open(&database_path).map_err(database_open_error)?;
         initialize_database(&mut connection).map_err(database_open_error)?;
+        apply_installer_locale(&connection, &data_directory)?;
         Ok(Self {
             connection: Mutex::new(connection),
             database_path,
@@ -344,7 +393,7 @@ impl DataStore {
             })?
             .collect::<Result<Vec<_>, _>>()?;
         let mut task_statement = connection.prepare(
-            "SELECT id, title, note, category_id, status, due_at_utc_ms, completed_at_utc_ms, created_at_utc_ms, updated_at_utc_ms,
+            "SELECT id, title, note, category_id, status, due_at_utc_ms, recurrence_json, completed_at_utc_ms, created_at_utc_ms, updated_at_utc_ms,
                     revision, updated_by_device_id
              FROM tasks WHERE deleted_at_utc_ms IS NULL ORDER BY created_at_utc_ms, id",
         )?;
@@ -357,11 +406,12 @@ impl DataStore {
                     category_id: row.get(3)?,
                     status: row.get(4)?,
                     due_at_utc_ms: row.get(5)?,
-                    completed_at_utc_ms: row.get(6)?,
-                    created_at_utc_ms: row.get(7)?,
-                    updated_at_utc_ms: row.get(8)?,
-                    revision: row.get(9)?,
-                    updated_by_device_id: row.get(10)?,
+                    recurrence_json: row.get(6)?,
+                    completed_at_utc_ms: row.get(7)?,
+                    created_at_utc_ms: row.get(8)?,
+                    updated_at_utc_ms: row.get(9)?,
+                    revision: row.get(10)?,
+                    updated_by_device_id: row.get(11)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -448,8 +498,8 @@ impl DataStore {
         }
         for task in &package.tasks {
             transaction.execute(
-                "INSERT INTO tasks (id, title, note, category_id, status, due_at_utc_ms, completed_at_utc_ms, created_at_utc_ms, updated_at_utc_ms, revision, updated_by_device_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![task.id, task.title.trim(), task.note.trim(), task.category_id, task.status, task.due_at_utc_ms, task.completed_at_utc_ms, task.created_at_utc_ms, task.updated_at_utc_ms, task.revision, task.updated_by_device_id],
+                "INSERT INTO tasks (id, title, note, category_id, status, due_at_utc_ms, recurrence_json, completed_at_utc_ms, created_at_utc_ms, updated_at_utc_ms, revision, updated_by_device_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![task.id, task.title.trim(), task.note.trim(), task.category_id, task.status, task.due_at_utc_ms, task.recurrence_json, task.completed_at_utc_ms, task.created_at_utc_ms, task.updated_at_utc_ms, task.revision, task.updated_by_device_id],
             )?;
         }
         transaction.commit()?;
@@ -516,6 +566,22 @@ impl DataStore {
         Ok(theme.to_string())
     }
 
+    pub fn save_interface_transparency(&self, transparency: u8) -> Result<u8, DataError> {
+        if transparency > 30 || transparency % 5 != 0 {
+            return Err(DataError("不支持的界面透明度设置".into()));
+        }
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        connection.execute(
+            "INSERT INTO device_settings (key, value, updated_at_utc_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_utc_ms = excluded.updated_at_utc_ms",
+            params![INTERFACE_TRANSPARENCY_KEY, transparency.to_string(), utc_now_ms()],
+        )?;
+        Ok(transparency)
+    }
+
     pub fn save_locale(&self, locale: &str) -> Result<String, DataError> {
         if !matches!(
             locale,
@@ -554,6 +620,61 @@ impl DataStore {
             params![STARTUP_ENABLED_KEY, if enabled { "true" } else { "false" }, utc_now_ms()],
         )?;
         Ok(enabled)
+    }
+
+    pub fn mcp_enabled(&self) -> Result<bool, DataError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        read_mcp_enabled(&connection)
+    }
+
+    pub fn save_mcp_enabled(&self, enabled: bool) -> Result<bool, DataError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        connection.execute(
+            "INSERT INTO device_settings (key, value, updated_at_utc_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_utc_ms = excluded.updated_at_utc_ms",
+            params![MCP_ENABLED_KEY, if enabled { "true" } else { "false" }, utc_now_ms()],
+        )?;
+        Ok(enabled)
+    }
+
+    pub fn window_state(&self) -> Result<Option<WindowStateDto>, DataError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        let encoded = connection
+            .query_row(
+                "SELECT value FROM device_settings WHERE key = ?1",
+                params![WINDOW_STATE_KEY],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        encoded
+            .map(|value| {
+                serde_json::from_str(&value).map_err(|_| DataError("窗口状态无法读取".into()))
+            })
+            .transpose()
+    }
+
+    pub fn save_window_state(&self, state: &WindowStateDto) -> Result<(), DataError> {
+        let encoded = serde_json::to_string(state)
+            .map_err(|error| DataError(format!("窗口状态无法保存：{error}")))?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        connection.execute(
+            "INSERT INTO device_settings (key, value, updated_at_utc_ms) VALUES (?1, ?2, ?3)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_utc_ms = excluded.updated_at_utc_ms",
+            params![WINDOW_STATE_KEY, encoded, utc_now_ms()],
+        )?;
+        Ok(())
     }
 
     pub fn create_category(&self, input: CreateCategoryInput) -> Result<CategoryDto, DataError> {
@@ -809,6 +930,352 @@ impl DataStore {
         read_task(&connection, &id)
     }
 
+    /// MCP write operations are idempotent within this installation. The
+    /// request id and final task snapshot live in the same SQLite transaction
+    /// as the mutation, so a retried agent request never creates a duplicate.
+    pub fn mcp_create_task(
+        &self,
+        request_id: &str,
+        input: CreateTaskInput,
+        recurrence: Option<RecurrenceConfig>,
+    ) -> Result<TaskDto, DataError> {
+        let title = validate_task_input(&input.title, &input.note)?;
+        validate_due_at(input.due_at_utc_ms)?;
+        if let Some(config) = &recurrence {
+            validate_recurrence(config)?;
+            if input.due_at_utc_ms.is_none() {
+                return Err(DataError("请先设置截止时间，再开启重复事项".into()));
+            }
+        }
+        let recurrence_json = recurrence
+            .map(|config| {
+                serde_json::to_string(&config).map_err(|error| DataError(error.to_string()))
+            })
+            .transpose()?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(task) = read_mcp_request_task(&transaction, request_id, "create")? {
+            return Ok(task);
+        }
+        ensure_active_category(&transaction, &input.category_id)?;
+        let now = utc_now_ms();
+        let id = Uuid::new_v4().to_string();
+        transaction.execute("INSERT INTO tasks (id, title, note, category_id, status, due_at_utc_ms, recurrence_json, created_at_utc_ms, updated_at_utc_ms, revision, updated_by_device_id) VALUES (?1, ?2, ?3, ?4, 'todo', ?5, ?6, ?7, ?7, 1, ?8)", params![id, title, input.note.trim(), input.category_id, input.due_at_utc_ms, recurrence_json, now, read_device_id(&transaction)?])?;
+        let task = read_task_transaction(&transaction, &id)?;
+        save_mcp_request_task(&transaction, request_id, "create", &task)?;
+        transaction.commit()?;
+        Ok(task)
+    }
+
+    pub fn mcp_update_task(
+        &self,
+        request_id: &str,
+        input: UpdateTaskInput,
+        expected_revision: i64,
+        recurrence: Option<Option<RecurrenceConfig>>,
+    ) -> Result<TaskDto, DataError> {
+        let title = validate_task_input(&input.title, &input.note)?;
+        validate_due_at(input.due_at_utc_ms)?;
+        if let Some(Some(config)) = &recurrence {
+            validate_recurrence(config)?;
+            if input.due_at_utc_ms.is_none() {
+                return Err(DataError("请先设置截止时间，再开启重复事项".into()));
+            }
+        }
+        let recurrence_json = recurrence
+            .map(|value| {
+                value
+                    .map(|config| {
+                        serde_json::to_string(&config).map_err(|error| DataError(error.to_string()))
+                    })
+                    .transpose()
+            })
+            .transpose()?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(task) = read_mcp_request_task(&transaction, request_id, "update")? {
+            return Ok(task);
+        }
+        ensure_active_category(&transaction, &input.category_id)?;
+        let changed = if let Some(recurrence_json) = recurrence_json {
+            transaction.execute("UPDATE tasks SET title=?1, note=?2, category_id=?3, due_at_utc_ms=?4, recurrence_json=?5, updated_at_utc_ms=?6, revision=revision+1, updated_by_device_id=?7 WHERE id=?8 AND revision=?9 AND deleted_at_utc_ms IS NULL", params![title, input.note.trim(), input.category_id, input.due_at_utc_ms, recurrence_json, utc_now_ms(), read_device_id(&transaction)?, input.id, expected_revision])?
+        } else {
+            transaction.execute("UPDATE tasks SET title=?1, note=?2, category_id=?3, due_at_utc_ms=?4, updated_at_utc_ms=?5, revision=revision+1, updated_by_device_id=?6 WHERE id=?7 AND revision=?8 AND deleted_at_utc_ms IS NULL", params![title, input.note.trim(), input.category_id, input.due_at_utc_ms, utc_now_ms(), read_device_id(&transaction)?, input.id, expected_revision])?
+        };
+        if changed != 1 {
+            return Err(DataError("事项已被更新，请先重新读取后再编辑".into()));
+        }
+        let task = read_task_transaction(&transaction, &input.id)?;
+        save_mcp_request_task(&transaction, request_id, "update", &task)?;
+        transaction.commit()?;
+        Ok(task)
+    }
+
+    pub fn mcp_set_task_status(
+        &self,
+        request_id: &str,
+        id: &str,
+        status: &str,
+        expected_revision: i64,
+    ) -> Result<TaskDto, DataError> {
+        validate_status(status)?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(task) = read_mcp_request_task(&transaction, request_id, status)? {
+            return Ok(task);
+        }
+        let now = utc_now_ms();
+        let completed_at = if status == "completed" {
+            Some(now)
+        } else {
+            None
+        };
+        let changed = transaction.execute("UPDATE tasks SET status=?1, completed_at_utc_ms=?2, updated_at_utc_ms=?3, revision=revision+1, updated_by_device_id=?4 WHERE id=?5 AND revision=?6 AND deleted_at_utc_ms IS NULL", params![status, completed_at, now, read_device_id(&transaction)?, id, expected_revision])?;
+        if changed != 1 {
+            return Err(DataError("事项已被更新，请先重新读取后再操作".into()));
+        }
+        let task = read_task_transaction(&transaction, id)?;
+        save_mcp_request_task(&transaction, request_id, status, &task)?;
+        transaction.commit()?;
+        Ok(task)
+    }
+
+    /// Category MCP writes use the same request log as task writes.  This
+    /// makes a retried agent request safe without exposing the database to the
+    /// bridge process.
+    pub fn mcp_create_category(
+        &self,
+        request_id: &str,
+        name: &str,
+        color_id: Option<&str>,
+    ) -> Result<CategoryDto, DataError> {
+        let requested_name = validate_category_name(name)?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(category) =
+            read_mcp_request_category(&transaction, request_id, "create-category")?
+        {
+            return Ok(category);
+        }
+        let name = next_available_category_name(&transaction, &requested_name)?;
+        let color_id = match color_id.filter(|value| !value.trim().is_empty()) {
+            Some(value) => {
+                ensure_palette_color(&transaction, value)?;
+                value.to_string()
+            }
+            None => next_available_color_id(&transaction)?,
+        };
+        let id = Uuid::new_v4().to_string();
+        let now = utc_now_ms();
+        let sort_order: i64 = transaction.query_row(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM categories WHERE deleted_at_utc_ms IS NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        transaction.execute(
+            "INSERT INTO categories (id, name, default_key, name_override, color_id, created_at_utc_ms, updated_at_utc_ms, revision, updated_by_device_id, sort_order)
+             VALUES (?1, ?2, NULL, NULL, ?3, ?4, ?4, 1, ?5, ?6)",
+            params![id, name, color_id, now, read_device_id(&transaction)?, sort_order],
+        )?;
+        let category = read_category_transaction(&transaction, &id)?;
+        save_mcp_request_category(&transaction, request_id, "create-category", &category)?;
+        transaction.commit()?;
+        Ok(category)
+    }
+
+    pub fn mcp_update_category(
+        &self,
+        request_id: &str,
+        input: UpdateCategoryInput,
+        expected_revision: i64,
+    ) -> Result<CategoryDto, DataError> {
+        let name = validate_category_name(&input.name)?;
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(category) =
+            read_mcp_request_category(&transaction, request_id, "update-category")?
+        {
+            return Ok(category);
+        }
+        ensure_palette_color(&transaction, &input.color_id)?;
+        ensure_category_name_available(&transaction, &name, Some(&input.id))?;
+        let changed = transaction.execute(
+            "UPDATE categories SET
+               name = CASE WHEN default_key IS NULL THEN ?1 ELSE name END,
+               name_override = CASE WHEN default_key IS NULL OR ?1 = name THEN name_override ELSE ?1 END,
+               color_id = ?2, updated_at_utc_ms = ?3, revision = revision + 1,
+               updated_by_device_id = ?4
+             WHERE id = ?5 AND revision = ?6 AND deleted_at_utc_ms IS NULL",
+            params![name, input.color_id, utc_now_ms(), read_device_id(&transaction)?, input.id, expected_revision],
+        )?;
+        if changed != 1 {
+            return Err(DataError("分类已被更新，请先重新读取后再编辑".into()));
+        }
+        let category = read_category_transaction(&transaction, &input.id)?;
+        save_mcp_request_category(&transaction, request_id, "update-category", &category)?;
+        transaction.commit()?;
+        Ok(category)
+    }
+
+    /// A delete preflight deliberately performs no mutation.  AI-5 will bind
+    /// this preview to a local confirmation token before exposing deletion.
+    pub fn mcp_prepare_delete_category(
+        &self,
+        id: &str,
+    ) -> Result<CategoryDeletePreviewDto, DataError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        let category = read_category(&connection, id)?;
+        let task_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE category_id = ?1 AND deleted_at_utc_ms IS NULL",
+            params![id],
+            |row| row.get(0),
+        )?;
+        let mut statement = connection.prepare(
+            "SELECT categories.id, categories.name, categories.default_key, categories.name_override, categories.color_id, palette_colors.value, categories.revision
+             FROM categories JOIN palette_colors ON palette_colors.id = categories.color_id
+             WHERE categories.id <> ?1 AND categories.deleted_at_utc_ms IS NULL
+             ORDER BY categories.sort_order, categories.created_at_utc_ms, categories.id",
+        )?;
+        let migration_targets = statement
+            .query_map(params![id], |row| {
+                Ok(CategoryDto {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    default_key: row.get(2)?,
+                    name_override: row.get(3)?,
+                    color_id: row.get(4)?,
+                    color: row.get(5)?,
+                    revision: row.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(CategoryDeletePreviewDto {
+            category,
+            task_count,
+            migration_targets,
+        })
+    }
+
+    pub fn mcp_prepare_delete_task(&self, id: &str) -> Result<TaskDto, DataError> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        read_task(&connection, id)
+    }
+
+    pub fn mcp_delete_task(
+        &self,
+        request_id: &str,
+        id: &str,
+        expected_revision: i64,
+    ) -> Result<McpDeleteResultDto, DataError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(result) = read_mcp_delete_result(&transaction, request_id, "delete-task")? {
+            return Ok(result);
+        }
+        let changed = transaction.execute(
+            "DELETE FROM tasks WHERE id = ?1 AND revision = ?2 AND deleted_at_utc_ms IS NULL",
+            params![id, expected_revision],
+        )?;
+        if changed != 1 {
+            return Err(DataError("事项已被更新，请先重新读取后再删除".into()));
+        }
+        let result = McpDeleteResultDto {
+            id: id.to_string(),
+            deleted: true,
+            migrated_task_count: 0,
+        };
+        save_mcp_delete_result(&transaction, request_id, "delete-task", &result)?;
+        transaction.commit()?;
+        Ok(result)
+    }
+
+    pub fn mcp_delete_category(
+        &self,
+        request_id: &str,
+        id: &str,
+        expected_revision: i64,
+        target_category_id: Option<&str>,
+    ) -> Result<McpDeleteResultDto, DataError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(result) = read_mcp_delete_result(&transaction, request_id, "delete-category")? {
+            return Ok(result);
+        }
+        ensure_active_category(&transaction, id)?;
+        let current_revision: i64 = transaction.query_row(
+            "SELECT revision FROM categories WHERE id = ?1 AND deleted_at_utc_ms IS NULL",
+            params![id],
+            |row| row.get(0),
+        )?;
+        if current_revision != expected_revision {
+            return Err(DataError("分类已被更新，请先重新读取后再删除".into()));
+        }
+        let task_count: i64 = transaction.query_row(
+            "SELECT COUNT(*) FROM tasks WHERE category_id = ?1 AND deleted_at_utc_ms IS NULL",
+            params![id],
+            |row| row.get(0),
+        )?;
+        let target = if task_count > 0 {
+            let target = target_category_id.ok_or_else(|| {
+                DataError(format!(
+                    "该分类仍有 {task_count} 个事项，请先选择迁移目标分类"
+                ))
+            })?;
+            if target == id {
+                return Err(DataError("迁移目标不能是当前分类".into()));
+            }
+            ensure_active_category(&transaction, target)?;
+            Some(target)
+        } else {
+            None
+        };
+        if let Some(target) = target {
+            transaction.execute("UPDATE tasks SET category_id = ?1, updated_at_utc_ms = ?2, revision = revision + 1, updated_by_device_id = ?3 WHERE category_id = ?4 AND deleted_at_utc_ms IS NULL", params![target, utc_now_ms(), read_device_id(&transaction)?, id])?;
+        }
+        let changed = transaction.execute(
+            "DELETE FROM categories WHERE id = ?1 AND revision = ?2 AND deleted_at_utc_ms IS NULL",
+            params![id, expected_revision],
+        )?;
+        if changed != 1 {
+            return Err(DataError("分类已被更新，请先重新读取后再删除".into()));
+        }
+        let result = McpDeleteResultDto {
+            id: id.to_string(),
+            deleted: true,
+            migrated_task_count: task_count,
+        };
+        save_mcp_delete_result(&transaction, request_id, "delete-category", &result)?;
+        transaction.commit()?;
+        Ok(result)
+    }
+
     pub fn update_task(&self, input: UpdateTaskInput) -> Result<TaskDto, DataError> {
         let title = validate_task_input(&input.title, &input.note)?;
         validate_due_at(input.due_at_utc_ms)?;
@@ -857,6 +1324,93 @@ impl DataStore {
         read_task(&connection, id)
     }
 
+    pub fn save_task_recurrence(
+        &self,
+        id: &str,
+        recurrence: Option<RecurrenceConfig>,
+    ) -> Result<TaskDto, DataError> {
+        if let Some(config) = &recurrence {
+            validate_recurrence(config)?;
+        }
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let due_at: Option<i64> = transaction
+            .query_row(
+                "SELECT due_at_utc_ms FROM tasks WHERE id=?1 AND deleted_at_utc_ms IS NULL",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        if recurrence.is_some() && due_at.is_none() {
+            return Err(DataError("请先设置截止时间，再开启重复事项".into()));
+        }
+        let value = recurrence
+            .map(|config| {
+                serde_json::to_string(&config).map_err(|error| DataError(error.to_string()))
+            })
+            .transpose()?;
+        let changed = transaction.execute("UPDATE tasks SET recurrence_json=?1, updated_at_utc_ms=?2, revision=revision+1, updated_by_device_id=?3 WHERE id=?4 AND deleted_at_utc_ms IS NULL", params![value, utc_now_ms(), read_device_id(&transaction)?, id])?;
+        if changed != 1 {
+            return Err(DataError("事项不存在或已删除".into()));
+        }
+        let task = read_task_transaction(&transaction, id)?;
+        transaction.commit()?;
+        Ok(task)
+    }
+
+    pub fn settle_due_recurrences(&self) -> Result<usize, DataError> {
+        let mut connection = self
+            .connection
+            .lock()
+            .map_err(|_| DataError("本地数据连接不可用".into()))?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let now = utc_now_ms();
+        let mut statement = transaction.prepare("SELECT id,title,note,category_id,due_at_utc_ms,recurrence_json FROM tasks WHERE status='todo' AND deleted_at_utc_ms IS NULL AND due_at_utc_ms IS NOT NULL AND due_at_utc_ms <= ?1 AND recurrence_json IS NOT NULL")?;
+        let rows = statement
+            .query_map(params![now], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+        let device_id = read_device_id(&transaction)?;
+        let mut settled = 0;
+        for (id, title, note, category_id, due, json) in rows {
+            let Ok(config) = serde_json::from_str::<RecurrenceConfig>(&json) else {
+                continue;
+            };
+            if validate_recurrence(&config).is_err() {
+                continue;
+            }
+            let next = next_recurrence_due(due, &config)?;
+            if config.action == "update_due" {
+                transaction.execute("UPDATE tasks SET due_at_utc_ms=?1, updated_at_utc_ms=?2, revision=revision+1, updated_by_device_id=?3 WHERE id=?4", params![next, now, device_id, id])?;
+            } else {
+                transaction.execute("UPDATE tasks SET status='completed', completed_at_utc_ms=?1, recurrence_json=NULL, updated_at_utc_ms=?1, revision=revision+1, updated_by_device_id=?2 WHERE id=?3", params![now, device_id, id])?;
+                let base = if config.base_title.trim().is_empty() {
+                    title
+                } else {
+                    config.base_title.clone()
+                };
+                let new_id = Uuid::new_v4().to_string();
+                transaction.execute("INSERT INTO tasks (id,title,note,category_id,status,due_at_utc_ms,recurrence_json,created_at_utc_ms,updated_at_utc_ms,revision,updated_by_device_id) VALUES (?1,?2,?3,?4,'todo',?5,?6,?7,?7,1,?8)", params![new_id, recurrence_title(&base, next, &config), note, category_id, next, json, now, device_id])?;
+            }
+            settled += 1;
+        }
+        transaction.commit()?;
+        Ok(settled)
+    }
+
     pub fn delete_task(&self, id: &str) -> Result<(), DataError> {
         let mut connection = self
             .connection
@@ -872,6 +1426,59 @@ impl DataStore {
         }
         transaction.commit()?;
         Ok(())
+    }
+}
+
+fn apply_installer_locale(connection: &Connection, data_directory: &Path) -> Result<(), DataError> {
+    let marker = data_directory.join(INSTALLER_LOCALE_FILE);
+    let Ok(locale) = fs::read_to_string(&marker) else { return Ok(()); };
+    let locale = locale.trim();
+    if !matches!(locale, "zh-CN" | "zh-TW" | "en" | "de" | "fr" | "it" | "es" | "ja") { return Ok(()); }
+    connection.execute(
+        "INSERT INTO device_settings (key, value, updated_at_utc_ms) VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_utc_ms = excluded.updated_at_utc_ms",
+        params![LOCALE_KEY, locale, utc_now_ms()],
+    ).map_err(|error| DataError(format!("无法应用安装语言：{error}")))?;
+    let _ = fs::remove_file(marker);
+    Ok(())
+}
+
+fn validate_recurrence(config: &RecurrenceConfig) -> Result<(), DataError> {
+    if !(1..=999).contains(&config.interval) {
+        return Err(DataError("重复间隔需要在 1 到 999 之间".into()));
+    }
+    if !matches!(config.unit.as_str(), "day" | "week" | "month" | "year") {
+        return Err(DataError("重复单位无效".into()));
+    }
+    if !matches!(config.action.as_str(), "update_due" | "create_new") {
+        return Err(DataError("重复方式无效".into()));
+    }
+    Ok(())
+}
+
+fn next_recurrence_due(due: i64, config: &RecurrenceConfig) -> Result<i64, DataError> {
+    let date = Utc
+        .timestamp_millis_opt(due)
+        .single()
+        .ok_or_else(|| DataError("截止时间无效".into()))?;
+    let next = match config.unit.as_str() {
+        "day" => date.checked_add_signed(chrono::Duration::days(config.interval as i64)),
+        "week" => date.checked_add_signed(chrono::Duration::weeks(config.interval as i64)),
+        "month" => date.checked_add_months(Months::new(config.interval as u32)),
+        "year" => date.checked_add_months(Months::new(config.interval as u32 * 12)),
+        _ => None,
+    }
+    .ok_or_else(|| DataError("无法计算下一次截止时间".into()))?;
+    Ok(next.timestamp_millis())
+}
+
+fn recurrence_title(base: &str, due: i64, config: &RecurrenceConfig) -> String {
+    let date = Utc.timestamp_millis_opt(due).single();
+    match (config.unit.as_str(), date) {
+        ("month", Some(date)) => format!("{}-{}月", base, date.month()),
+        ("year", Some(date)) => format!("{}-{}年", base, date.year()),
+        ("week", Some(date)) => format!("{}-{}月{}日", base, date.month(), date.day()),
+        _ => base.to_string(),
     }
 }
 
@@ -899,12 +1506,15 @@ fn initialize_database(connection: &mut Connection) -> Result<(), DataError> {
              default_key TEXT, name_override TEXT, UNIQUE(name));
          CREATE TABLE IF NOT EXISTS tasks (
              id TEXT PRIMARY KEY NOT NULL, title TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', category_id TEXT NOT NULL REFERENCES categories(id),
-             status TEXT NOT NULL CHECK(status IN ('todo', 'completed')), due_at_utc_ms INTEGER,
+             status TEXT NOT NULL CHECK(status IN ('todo', 'completed')), due_at_utc_ms INTEGER, recurrence_json TEXT,
              completed_at_utc_ms INTEGER, created_at_utc_ms INTEGER NOT NULL, updated_at_utc_ms INTEGER NOT NULL,
              revision INTEGER NOT NULL DEFAULT 1, updated_by_device_id TEXT NOT NULL, deleted_at_utc_ms INTEGER);
          CREATE TABLE IF NOT EXISTS import_snapshots (
              id TEXT PRIMARY KEY NOT NULL, created_at_utc_ms INTEGER NOT NULL,
-             source_file_name TEXT NOT NULL, snapshot_path TEXT NOT NULL);",
+             source_file_name TEXT NOT NULL, snapshot_path TEXT NOT NULL);
+         CREATE TABLE IF NOT EXISTS mcp_request_log (
+             request_id TEXT NOT NULL, operation TEXT NOT NULL, response_json TEXT NOT NULL,
+             created_at_utc_ms INTEGER NOT NULL, PRIMARY KEY(request_id, operation));",
     )?;
     ensure_category_sort_order(&transaction)?;
     let now = utc_now_ms();
@@ -918,6 +1528,7 @@ fn initialize_database(connection: &mut Connection) -> Result<(), DataError> {
     )?;
     transaction.execute("INSERT OR IGNORE INTO device_settings (key, value, updated_at_utc_ms) VALUES (?1, 'light', ?2)", params![THEME_KEY, now])?;
     transaction.execute("INSERT OR IGNORE INTO device_settings (key, value, updated_at_utc_ms) VALUES (?1, 'true', ?2)", params![STARTUP_ENABLED_KEY, now])?;
+    transaction.execute("INSERT OR IGNORE INTO device_settings (key, value, updated_at_utc_ms) VALUES (?1, 'true', ?2)", params![MCP_ENABLED_KEY, now])?;
     transaction.execute(
         "INSERT OR IGNORE INTO device_settings (key, value, updated_at_utc_ms) VALUES (?1, ?2, ?3)",
         params![LOCALE_KEY, DEFAULT_LOCALE, now],
@@ -953,6 +1564,7 @@ fn initialize_database(connection: &mut Connection) -> Result<(), DataError> {
     migrate_task_hard_delete_v5(&transaction, now)?;
     migrate_localized_default_categories_v6(&transaction, now, &device_id)?;
     migrate_other_default_color_v7(&transaction, now, &device_id)?;
+    migrate_task_recurrence_v8(&transaction, now)?;
     transaction.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at_utc_ms) VALUES (1, ?1)",
         params![now],
@@ -1065,6 +1677,35 @@ fn migrate_other_default_color_v7(
     Ok(())
 }
 
+fn migrate_task_recurrence_v8(
+    transaction: &rusqlite::Transaction<'_>,
+    now: i64,
+) -> Result<(), DataError> {
+    if transaction
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE version = 8",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let columns = transaction
+        .prepare("PRAGMA table_info(tasks)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if !columns.iter().any(|name| name == "recurrence_json") {
+        transaction.execute_batch("ALTER TABLE tasks ADD COLUMN recurrence_json TEXT;")?;
+    }
+    transaction.execute(
+        "INSERT INTO schema_migrations (version, applied_at_utc_ms) VALUES (8, ?1)",
+        params![now],
+    )?;
+    Ok(())
+}
+
 fn read_bootstrap(connection: &Connection) -> Result<BootstrapDto, DataError> {
     let device_id = connection.query_row(
         "SELECT value FROM app_metadata WHERE key = 'device_id'",
@@ -1080,6 +1721,8 @@ fn read_bootstrap(connection: &Connection) -> Result<BootstrapDto, DataError> {
         .optional()?
         .unwrap_or_else(|| "light".to_string());
     let startup_enabled = read_startup_enabled(connection)?;
+    let mcp_enabled = read_mcp_enabled(connection)?;
+    let interface_transparency = read_interface_transparency(connection)?;
     let locale = read_locale(connection)?;
     let mut palette_statement = connection.prepare("SELECT id, row_index, column_index, value FROM palette_colors WHERE deleted_at_utc_ms IS NULL ORDER BY row_index, column_index")?;
     let palette = palette_statement
@@ -1093,7 +1736,7 @@ fn read_bootstrap(connection: &Connection) -> Result<BootstrapDto, DataError> {
         })?
         .collect::<Result<Vec<_>, _>>()?;
     let mut category_statement = connection.prepare(
-        "SELECT categories.id, categories.name, categories.default_key, categories.name_override, categories.color_id, palette_colors.value FROM categories JOIN palette_colors ON palette_colors.id = categories.color_id WHERE categories.deleted_at_utc_ms IS NULL ORDER BY categories.sort_order, categories.created_at_utc_ms, categories.id",
+        "SELECT categories.id, categories.name, categories.default_key, categories.name_override, categories.color_id, palette_colors.value, categories.revision FROM categories JOIN palette_colors ON palette_colors.id = categories.color_id WHERE categories.deleted_at_utc_ms IS NULL ORDER BY categories.sort_order, categories.created_at_utc_ms, categories.id",
     )?;
     let categories = category_statement
         .query_map([], |row| {
@@ -1104,6 +1747,7 @@ fn read_bootstrap(connection: &Connection) -> Result<BootstrapDto, DataError> {
                 name_override: row.get(3)?,
                 color_id: row.get(4)?,
                 color: row.get(5)?,
+                revision: row.get(6)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -1112,6 +1756,8 @@ fn read_bootstrap(connection: &Connection) -> Result<BootstrapDto, DataError> {
         theme,
         locale,
         startup_enabled,
+        mcp_enabled,
+        interface_transparency,
         categories,
         palette,
     })
@@ -1122,6 +1768,33 @@ fn read_startup_enabled(connection: &Connection) -> Result<bool, DataError> {
         .query_row(
             "SELECT value FROM device_settings WHERE key = ?1",
             params![STARTUP_ENABLED_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .unwrap_or_else(|| "true".to_string());
+    Ok(value == "true")
+}
+
+fn read_interface_transparency(connection: &Connection) -> Result<u8, DataError> {
+    let value = connection
+        .query_row(
+            "SELECT value FROM device_settings WHERE key = ?1",
+            params![INTERFACE_TRANSPARENCY_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(value
+        .and_then(|value| value.parse::<u8>().ok())
+        .filter(|value| *value % 5 == 0)
+        .map(|value| value.min(30))
+        .unwrap_or(5))
+}
+
+fn read_mcp_enabled(connection: &Connection) -> Result<bool, DataError> {
+    let value = connection
+        .query_row(
+            "SELECT value FROM device_settings WHERE key = ?1",
+            params![MCP_ENABLED_KEY],
             |row| row.get::<_, String>(0),
         )
         .optional()?
@@ -1438,7 +2111,7 @@ fn next_available_color_id(connection: &rusqlite::Transaction<'_>) -> Result<Str
 fn read_category(connection: &Connection, id: &str) -> Result<CategoryDto, DataError> {
     connection
         .query_row(
-            "SELECT categories.id, categories.name, categories.default_key, categories.name_override, categories.color_id, palette_colors.value FROM categories
+            "SELECT categories.id, categories.name, categories.default_key, categories.name_override, categories.color_id, palette_colors.value, categories.revision FROM categories
              JOIN palette_colors ON palette_colors.id = categories.color_id
              WHERE categories.id = ?1 AND categories.deleted_at_utc_ms IS NULL",
             params![id],
@@ -1450,6 +2123,33 @@ fn read_category(connection: &Connection, id: &str) -> Result<CategoryDto, DataE
                     name_override: row.get(3)?,
                     color_id: row.get(4)?,
                     color: row.get(5)?,
+                    revision: row.get(6)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| DataError("分类不存在或已删除".into()))
+}
+
+fn read_category_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    id: &str,
+) -> Result<CategoryDto, DataError> {
+    transaction
+        .query_row(
+            "SELECT categories.id, categories.name, categories.default_key, categories.name_override, categories.color_id, palette_colors.value, categories.revision
+             FROM categories JOIN palette_colors ON palette_colors.id = categories.color_id
+             WHERE categories.id = ?1 AND categories.deleted_at_utc_ms IS NULL",
+            params![id],
+            |row| {
+                Ok(CategoryDto {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    default_key: row.get(2)?,
+                    name_override: row.get(3)?,
+                    color_id: row.get(4)?,
+                    color: row.get(5)?,
+                    revision: row.get(6)?,
                 })
             },
         )
@@ -1460,11 +2160,121 @@ fn read_category(connection: &Connection, id: &str) -> Result<CategoryDto, DataE
 fn read_task(connection: &Connection, id: &str) -> Result<TaskDto, DataError> {
     connection.query_row(
         "SELECT tasks.id, tasks.title, tasks.note, tasks.category_id, categories.name, categories.default_key, categories.name_override, palette_colors.value, tasks.status,
-         tasks.due_at_utc_ms, tasks.created_at_utc_ms, tasks.updated_at_utc_ms, tasks.completed_at_utc_ms FROM tasks
+         tasks.due_at_utc_ms, tasks.recurrence_json, tasks.created_at_utc_ms, tasks.updated_at_utc_ms, tasks.completed_at_utc_ms, tasks.revision FROM tasks
          JOIN categories ON categories.id = tasks.category_id JOIN palette_colors ON palette_colors.id = categories.color_id
          WHERE tasks.id = ?1 AND tasks.deleted_at_utc_ms IS NULL",
         params![id], task_from_row,
     ).optional()?.ok_or_else(|| DataError("事项不存在或已删除".into()))
+}
+
+fn read_task_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    id: &str,
+) -> Result<TaskDto, DataError> {
+    transaction.query_row(
+        "SELECT tasks.id, tasks.title, tasks.note, tasks.category_id, categories.name, categories.default_key, categories.name_override, palette_colors.value, tasks.status, tasks.due_at_utc_ms, tasks.recurrence_json, tasks.created_at_utc_ms, tasks.updated_at_utc_ms, tasks.completed_at_utc_ms, tasks.revision FROM tasks JOIN categories ON categories.id = tasks.category_id JOIN palette_colors ON palette_colors.id = categories.color_id WHERE tasks.id = ?1 AND tasks.deleted_at_utc_ms IS NULL",
+        params![id],
+        |row| task_from_row(row),
+    ).optional()?.ok_or_else(|| DataError("事项不存在或已删除".into()))
+}
+
+fn read_mcp_request_task(
+    transaction: &rusqlite::Transaction<'_>,
+    request_id: &str,
+    operation: &str,
+) -> Result<Option<TaskDto>, DataError> {
+    let encoded: Option<String> = transaction
+        .query_row(
+            "SELECT response_json FROM mcp_request_log WHERE request_id = ?1 AND operation = ?2",
+            params![request_id, operation],
+            |row| row.get(0),
+        )
+        .optional()?;
+    encoded
+        .map(|value| {
+            serde_json::from_str(&value).map_err(|_| DataError("MCP 请求记录无法读取".into()))
+        })
+        .transpose()
+}
+
+fn save_mcp_request_task(
+    transaction: &rusqlite::Transaction<'_>,
+    request_id: &str,
+    operation: &str,
+    task: &TaskDto,
+) -> Result<(), DataError> {
+    let response_json =
+        serde_json::to_string(task).map_err(|_| DataError("MCP 请求结果无法保存".into()))?;
+    transaction.execute(
+        "INSERT INTO mcp_request_log (request_id, operation, response_json, created_at_utc_ms) VALUES (?1, ?2, ?3, ?4)",
+        params![request_id, operation, response_json, utc_now_ms()],
+    )?;
+    Ok(())
+}
+
+fn read_mcp_request_category(
+    transaction: &rusqlite::Transaction<'_>,
+    request_id: &str,
+    operation: &str,
+) -> Result<Option<CategoryDto>, DataError> {
+    let encoded: Option<String> = transaction
+        .query_row(
+            "SELECT response_json FROM mcp_request_log WHERE request_id = ?1 AND operation = ?2",
+            params![request_id, operation],
+            |row| row.get(0),
+        )
+        .optional()?;
+    encoded
+        .map(|value| {
+            serde_json::from_str(&value).map_err(|_| DataError("MCP 请求记录无法读取".into()))
+        })
+        .transpose()
+}
+
+fn save_mcp_request_category(
+    transaction: &rusqlite::Transaction<'_>,
+    request_id: &str,
+    operation: &str,
+    category: &CategoryDto,
+) -> Result<(), DataError> {
+    let response_json =
+        serde_json::to_string(category).map_err(|_| DataError("MCP 请求结果无法保存".into()))?;
+    transaction.execute(
+        "INSERT INTO mcp_request_log (request_id, operation, response_json, created_at_utc_ms) VALUES (?1, ?2, ?3, ?4)",
+        params![request_id, operation, response_json, utc_now_ms()],
+    )?;
+    Ok(())
+}
+
+fn read_mcp_delete_result(
+    transaction: &rusqlite::Transaction<'_>,
+    request_id: &str,
+    operation: &str,
+) -> Result<Option<McpDeleteResultDto>, DataError> {
+    let encoded: Option<String> = transaction
+        .query_row(
+            "SELECT response_json FROM mcp_request_log WHERE request_id = ?1 AND operation = ?2",
+            params![request_id, operation],
+            |row| row.get(0),
+        )
+        .optional()?;
+    encoded
+        .map(|value| {
+            serde_json::from_str(&value).map_err(|_| DataError("MCP 请求记录无法读取".into()))
+        })
+        .transpose()
+}
+
+fn save_mcp_delete_result(
+    transaction: &rusqlite::Transaction<'_>,
+    request_id: &str,
+    operation: &str,
+    result: &McpDeleteResultDto,
+) -> Result<(), DataError> {
+    let response_json =
+        serde_json::to_string(result).map_err(|_| DataError("MCP 请求结果无法保存".into()))?;
+    transaction.execute("INSERT INTO mcp_request_log (request_id, operation, response_json, created_at_utc_ms) VALUES (?1, ?2, ?3, ?4)", params![request_id, operation, response_json, utc_now_ms()])?;
+    Ok(())
 }
 
 fn read_tasks(connection: &Connection, status: &str) -> Result<Vec<TaskDto>, DataError> {
@@ -1475,7 +2285,7 @@ fn read_tasks(connection: &Connection, status: &str) -> Result<Vec<TaskDto>, Dat
     };
     let query = format!(
         "SELECT tasks.id, tasks.title, tasks.note, tasks.category_id, categories.name, categories.default_key, categories.name_override, palette_colors.value, tasks.status,
-         tasks.due_at_utc_ms, tasks.created_at_utc_ms, tasks.updated_at_utc_ms, tasks.completed_at_utc_ms FROM tasks
+         tasks.due_at_utc_ms, tasks.recurrence_json, tasks.created_at_utc_ms, tasks.updated_at_utc_ms, tasks.completed_at_utc_ms, tasks.revision FROM tasks
          JOIN categories ON categories.id = tasks.category_id JOIN palette_colors ON palette_colors.id = categories.color_id
          WHERE tasks.status = ?1 AND tasks.deleted_at_utc_ms IS NULL ORDER BY {ordering}"
     );
@@ -1500,9 +2310,11 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskDto> {
         category_color: row.get(7)?,
         status: row.get(8)?,
         due_at_utc_ms: row.get(9)?,
-        created_at_utc_ms: row.get(10)?,
-        updated_at_utc_ms: row.get(11)?,
-        completed_at_utc_ms: row.get(12)?,
+        recurrence_json: row.get(10)?,
+        created_at_utc_ms: row.get(11)?,
+        updated_at_utc_ms: row.get(12)?,
+        completed_at_utc_ms: row.get(13)?,
+        revision: row.get(14)?,
     })
 }
 
@@ -1871,16 +2683,16 @@ fn merge_plaintext_package(
         match local {
             None => {
                 transaction.execute(
-                    "INSERT INTO tasks (id, title, note, category_id, status, due_at_utc_ms, completed_at_utc_ms, created_at_utc_ms, updated_at_utc_ms, revision, updated_by_device_id)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                    params![task.id, task.title.trim(), task.note.trim(), category_id, task.status, task.due_at_utc_ms, task.completed_at_utc_ms, task.created_at_utc_ms, task.updated_at_utc_ms, task.revision, task.updated_by_device_id],
+                    "INSERT INTO tasks (id, title, note, category_id, status, due_at_utc_ms, recurrence_json, completed_at_utc_ms, created_at_utc_ms, updated_at_utc_ms, revision, updated_by_device_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                    params![task.id, task.title.trim(), task.note.trim(), category_id, task.status, task.due_at_utc_ms, task.recurrence_json, task.completed_at_utc_ms, task.created_at_utc_ms, task.updated_at_utc_ms, task.revision, task.updated_by_device_id],
                 )?;
                 new_tasks += 1;
             }
             Some(local) if incoming_task_wins(task, category_id, &local) => {
                 transaction.execute(
-                    "UPDATE tasks SET title = ?1, note = ?2, category_id = ?3, status = ?4, due_at_utc_ms = ?5, completed_at_utc_ms = ?6, updated_at_utc_ms = ?7, revision = ?8, updated_by_device_id = ?9 WHERE id = ?10",
-                    params![task.title.trim(), task.note.trim(), category_id, task.status, task.due_at_utc_ms, task.completed_at_utc_ms, task.updated_at_utc_ms, task.revision, task.updated_by_device_id, task.id],
+                    "UPDATE tasks SET title = ?1, note = ?2, category_id = ?3, status = ?4, due_at_utc_ms = ?5, recurrence_json = ?6, completed_at_utc_ms = ?7, updated_at_utc_ms = ?8, revision = ?9, updated_by_device_id = ?10 WHERE id = ?11",
+                    params![task.title.trim(), task.note.trim(), category_id, task.status, task.due_at_utc_ms, task.recurrence_json, task.completed_at_utc_ms, task.updated_at_utc_ms, task.revision, task.updated_by_device_id, task.id],
                 )?;
                 updated_tasks += 1;
             }
@@ -2007,6 +2819,32 @@ mod tests {
         assert!(!store.save_startup_enabled(false).unwrap());
         assert!(!store.bootstrap().unwrap().startup_enabled);
     }
+
+    #[test]
+    fn mcp_setting_defaults_to_enabled_and_persists() {
+        let store = in_memory_store();
+        assert!(store.mcp_enabled().unwrap());
+        assert!(!store.save_mcp_enabled(false).unwrap());
+        assert!(!store.bootstrap().unwrap().mcp_enabled);
+        assert!(store.save_mcp_enabled(true).unwrap());
+        assert!(store.bootstrap().unwrap().mcp_enabled);
+    }
+
+    #[test]
+    fn window_state_is_optional_and_persists_geometry_and_mode() {
+        let store = in_memory_store();
+        assert!(store.window_state().unwrap().is_none());
+        let state = WindowStateDto {
+            x: -120,
+            y: 80,
+            width: 640,
+            height: 720,
+            mode: "mode-topmost".into(),
+        };
+        store.save_window_state(&state).unwrap();
+        assert_eq!(store.window_state().unwrap().unwrap().mode, "mode-topmost");
+        assert_eq!(store.window_state().unwrap().unwrap().x, -120);
+    }
     #[test]
     fn locale_defaults_to_simplified_chinese_and_persists() {
         let store = in_memory_store();
@@ -2014,6 +2852,19 @@ mod tests {
         assert_eq!(store.save_locale("ja").unwrap(), "ja");
         assert_eq!(store.bootstrap().unwrap().locale, "ja");
         assert!(store.save_locale("unsupported").is_err());
+    }
+
+    #[test]
+    fn installer_locale_marker_updates_locale_once() {
+        let directory = std::env::temp_dir().join(format!("mylist-locale-test-{}-{}", std::process::id(), utc_now_ms()));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join(INSTALLER_LOCALE_FILE), "ja").unwrap();
+        let mut connection = Connection::open_in_memory().unwrap();
+        initialize_database(&mut connection).unwrap();
+        apply_installer_locale(&connection, &directory).unwrap();
+        assert_eq!(read_locale(&connection).unwrap(), "ja");
+        assert!(!directory.join(INSTALLER_LOCALE_FILE).exists());
+        fs::remove_dir(directory).unwrap();
     }
     #[test]
     fn rerunning_migration_preserves_existing_identity_and_categories() {
@@ -2065,6 +2916,119 @@ mod tests {
         store.delete_task(&first.id).unwrap();
         assert!(store.get_task(&first.id).is_err());
         assert_eq!(store.list_tasks("todo").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn mcp_task_writes_are_idempotent_and_revision_guarded() {
+        let store = in_memory_store();
+        let category_id = store.bootstrap().unwrap().categories[0].id.clone();
+        let input = CreateTaskInput {
+            title: "MCP 测试事项".into(),
+            note: "不会重复创建".into(),
+            category_id: category_id.clone(),
+            due_at_utc_ms: None,
+        };
+        let created = store
+            .mcp_create_task("request-create-1", input.clone(), None)
+            .unwrap();
+        let repeated = store
+            .mcp_create_task("request-create-1", input, None)
+            .unwrap();
+        assert_eq!(created.id, repeated.id);
+        assert_eq!(store.list_tasks("todo").unwrap().len(), 1);
+
+        let completed = store
+            .mcp_set_task_status(
+                "request-complete-1",
+                &created.id,
+                "completed",
+                created.revision,
+            )
+            .unwrap();
+        assert_eq!(completed.status, "completed");
+        assert!(store
+            .mcp_set_task_status(
+                "request-restore-conflict",
+                &created.id,
+                "todo",
+                created.revision
+            )
+            .is_err());
+        let restored = store
+            .mcp_set_task_status("request-restore-1", &created.id, "todo", completed.revision)
+            .unwrap();
+        assert_eq!(restored.status, "todo");
+    }
+
+    #[test]
+    fn mcp_category_writes_are_idempotent_and_delete_is_preview_only() {
+        let store = in_memory_store();
+        let palette = store.bootstrap().unwrap().palette;
+        let created = store
+            .mcp_create_category(
+                "request-category-create",
+                "Agent 分类",
+                Some(&palette[0].id),
+            )
+            .unwrap();
+        let repeated = store
+            .mcp_create_category("request-category-create", "不会重复", Some(&palette[1].id))
+            .unwrap();
+        assert_eq!(created.id, repeated.id);
+        assert_eq!(
+            store
+                .bootstrap()
+                .unwrap()
+                .categories
+                .iter()
+                .filter(|category| category.name == "Agent 分类")
+                .count(),
+            1
+        );
+
+        let updated = store
+            .mcp_update_category(
+                "request-category-update",
+                UpdateCategoryInput {
+                    id: created.id.clone(),
+                    name: "Agent 分类已改名".into(),
+                    color_id: palette[1].id.clone(),
+                },
+                created.revision,
+            )
+            .unwrap();
+        assert!(store
+            .mcp_update_category(
+                "request-category-conflict",
+                UpdateCategoryInput {
+                    id: created.id.clone(),
+                    name: "不应写入".into(),
+                    color_id: palette[2].id.clone(),
+                },
+                created.revision,
+            )
+            .is_err());
+        store
+            .create_task(CreateTaskInput {
+                title: "引用分类的测试事项".into(),
+                note: "".into(),
+                category_id: updated.id.clone(),
+                due_at_utc_ms: None,
+            })
+            .unwrap();
+        let preview = store.mcp_prepare_delete_category(&updated.id).unwrap();
+        assert_eq!(preview.task_count, 1);
+        assert!(preview
+            .migration_targets
+            .iter()
+            .all(|target| target.id != updated.id));
+        assert_eq!(
+            store
+                .get_task(&store.list_tasks("todo").unwrap()[0].id)
+                .unwrap()
+                .category_id,
+            updated.id
+        );
     }
 
     #[test]
@@ -2336,5 +3300,47 @@ mod tests {
             .categories
             .iter()
             .any(|category| category.id == source.id));
+    }
+
+    #[test]
+    fn mcp_create_and_update_support_recurrence() {
+        let store = in_memory_store();
+        let category_id = store.bootstrap().unwrap().categories[0].id.clone();
+        let due_at = 1_786_860_000_000;
+        let recurrence = RecurrenceConfig {
+            interval: 1,
+            unit: "week".into(),
+            action: "create_new".into(),
+            base_title: "每周复盘".into(),
+        };
+        let created = store
+            .mcp_create_task(
+                "recurrence-create",
+                CreateTaskInput {
+                    title: "每周复盘".into(),
+                    note: "MCP 创建".into(),
+                    category_id: category_id.clone(),
+                    due_at_utc_ms: Some(due_at),
+                },
+                Some(recurrence),
+            )
+            .unwrap();
+        assert!(created.recurrence_json.is_some());
+
+        let updated = store
+            .mcp_update_task(
+                "recurrence-disable",
+                UpdateTaskInput {
+                    id: created.id,
+                    title: "每周复盘".into(),
+                    note: "MCP 更新".into(),
+                    category_id,
+                    due_at_utc_ms: Some(due_at),
+                },
+                created.revision,
+                Some(None),
+            )
+            .unwrap();
+        assert_eq!(updated.recurrence_json, None);
     }
 }

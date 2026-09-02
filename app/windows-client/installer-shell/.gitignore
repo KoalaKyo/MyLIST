@@ -1,0 +1,4 @@
+/dist/
+/payload/
+/target/
+/src-tauri/target/

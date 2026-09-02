@@ -5,6 +5,11 @@ mod data;
 #[cfg(target_os = "windows")]
 mod desktop_mode;
 mod mcp;
+mod mcp_bridge;
+mod mcp_confirmation;
+mod mcp_service;
+mod mcp_stdio_bridge;
+mod mcp_transfer;
 mod native_i18n;
 #[cfg(target_os = "windows")]
 mod window_shape;
@@ -29,12 +34,137 @@ use tauri::{
     AppHandle, Emitter, Manager, WindowEvent,
 };
 
+pub fn run_mcp_bridge() -> std::io::Result<()> {
+    mcp_stdio_bridge::run()
+}
+
 const MAIN_WINDOW: &str = "main";
 const TOPMOST_MODE: &str = "mode-topmost";
 const NORMAL_MODE: &str = "mode-normal";
 const DESKTOP_MODE: &str = "mode-desktop";
 const OPEN_MAIN: &str = "open-main";
 const QUIT: &str = "quit";
+#[cfg(target_os = "windows")]
+const DEFAULT_WINDOW_WIDTH: u32 = 350;
+#[cfg(target_os = "windows")]
+const DEFAULT_WINDOW_HEIGHT: u32 = 530;
+
+/// Repairs a saved geometry that no longer intersects any connected display.
+/// This is especially important after a monitor is removed or after an older
+/// build accidentally persisted an auto-hidden/off-screen rectangle.
+#[cfg(target_os = "windows")]
+fn safe_window_position(
+    window: &tauri::WebviewWindow,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> (i32, i32) {
+    let required_width = (width.min(64)) as i32;
+    let required_height = (height.min(64)) as i32;
+    let intersects_monitor = window.available_monitors().ok().is_some_and(|monitors| {
+        monitors.into_iter().any(|monitor| {
+            let position = monitor.position();
+            let size = monitor.size();
+            let monitor_right = position.x.saturating_add(size.width as i32);
+            let monitor_bottom = position.y.saturating_add(size.height as i32);
+            let overlap_width =
+                (x.saturating_add(width as i32).min(monitor_right) - x.max(position.x)).max(0);
+            let overlap_height =
+                (y.saturating_add(height as i32).min(monitor_bottom) - y.max(position.y)).max(0);
+            overlap_width >= required_width && overlap_height >= required_height
+        })
+    });
+    if intersects_monitor {
+        return (x, y);
+    }
+
+    window
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .map(|monitor| {
+            let position = monitor.position();
+            let size = monitor.size();
+            (
+                position.x + ((size.width as i32 - width as i32).max(0) / 2),
+                position.y + ((size.height as i32 - height as i32).max(0) / 2),
+            )
+        })
+        .unwrap_or((100, 100))
+}
+
+#[cfg(target_os = "windows")]
+fn saved_size_fits_one_monitor(window: &tauri::WebviewWindow, width: u32, height: u32) -> bool {
+    window
+        .available_monitors()
+        .ok()
+        .map(|monitors| {
+            monitors.into_iter().any(|monitor| {
+                let size = monitor.size();
+                width <= size.width && height <= size.height
+            })
+        })
+        // A temporary monitor-enumeration failure must not discard an otherwise
+        // valid saved geometry.
+        .unwrap_or(true)
+}
+
+#[cfg(target_os = "windows")]
+fn restore_window_geometry(window: &tauri::WebviewWindow, saved: &data::WindowStateDto) {
+    let geometry_is_valid = saved_size_fits_one_monitor(window, saved.width, saved.height);
+    let (width, height) = if geometry_is_valid {
+        (
+            saved.width.max(DEFAULT_WINDOW_WIDTH),
+            saved.height.max(DEFAULT_WINDOW_HEIGHT),
+        )
+    } else {
+        (DEFAULT_WINDOW_WIDTH, DEFAULT_WINDOW_HEIGHT)
+    };
+    let (candidate_x, candidate_y) = if geometry_is_valid {
+        (saved.x, saved.y)
+    } else {
+        // Force `safe_window_position` to choose a visible primary-monitor
+        // position instead of reusing a corrupted multi-monitor rectangle.
+        (i32::MAX, i32::MAX)
+    };
+    let (x, y) = safe_window_position(window, candidate_x, candidate_y, width, height);
+    // If the saved monitor disappeared, keep Tauri's current/configured size
+    // and repair only the position. This avoids turning a valid 350×530 DIP
+    // window into a smaller physical-pixel rectangle during recovery.
+    if geometry_is_valid && (x, y) == (saved.x, saved.y) {
+        let _ = window.set_size(tauri::PhysicalSize::new(width, height));
+    } else if !geometry_is_valid {
+        let _ = window.set_size(tauri::PhysicalSize::new(width, height));
+        if let Some(store) = window.app_handle().try_state::<DataStore>() {
+            let _ = store.save_window_state(&data::WindowStateDto {
+                x,
+                y,
+                width,
+                height,
+                mode: saved.mode.clone(),
+            });
+        }
+    }
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+    ensure_minimum_window_size(window);
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_minimum_window_size(window: &tauri::WebviewWindow) {
+    const MIN_WIDTH_DIP: f64 = DEFAULT_WINDOW_WIDTH as f64;
+    const MIN_HEIGHT_DIP: f64 = DEFAULT_WINDOW_HEIGHT as f64;
+    let scale = window.scale_factor().unwrap_or(1.0).max(1.0);
+    let minimum_width = (MIN_WIDTH_DIP * scale).ceil() as u32;
+    let minimum_height = (MIN_HEIGHT_DIP * scale).ceil() as u32;
+    let too_small = window
+        .outer_size()
+        .ok()
+        .is_some_and(|size| size.width < minimum_width || size.height < minimum_height);
+    if too_small {
+        let _ = window.set_size(tauri::LogicalSize::new(MIN_WIDTH_DIP, MIN_HEIGHT_DIP));
+    }
+}
 
 #[cfg(target_os = "windows")]
 fn show_startup_data_error(message: &str) {
@@ -83,6 +213,10 @@ struct WindowModeData {
     mode: WindowMode,
     #[cfg(target_os = "windows")]
     desktop_attachment: Option<desktop_mode::DesktopAttachment>,
+    #[cfg(target_os = "windows")]
+    normal_size_dip: Option<(f64, f64)>,
+    #[cfg(target_os = "windows")]
+    user_resizing: bool,
 }
 
 struct WindowModeState {
@@ -96,6 +230,10 @@ impl Default for WindowModeState {
                 mode: WindowMode::Normal,
                 #[cfg(target_os = "windows")]
                 desktop_attachment: None,
+                #[cfg(target_os = "windows")]
+                normal_size_dip: None,
+                #[cfg(target_os = "windows")]
+                user_resizing: false,
             }),
         }
     }
@@ -106,6 +244,7 @@ struct TrayModeControls {
     topmost: CheckMenuItem<tauri::Wry>,
     normal: CheckMenuItem<tauri::Wry>,
     desktop: CheckMenuItem<tauri::Wry>,
+    quit: MenuItem<tauri::Wry>,
 }
 
 enum PendingImport {
@@ -148,6 +287,26 @@ struct NativeLabelsState {
     labels: Mutex<NativeLabels>,
 }
 
+#[tauri::command]
+fn approve_mcp_confirmation(
+    state: tauri::State<'_, mcp_confirmation::McpConfirmationState>,
+    token: String,
+) -> Result<(), String> {
+    state
+        .approve(&token)
+        .map_err(|error| mcp::error(error, false).code.to_string())
+}
+
+#[tauri::command]
+fn reject_mcp_confirmation(
+    state: tauri::State<'_, mcp_confirmation::McpConfirmationState>,
+    token: String,
+) -> Result<(), String> {
+    state
+        .reject(&token)
+        .map_err(|error| mcp::error(error, false).code.to_string())
+}
+
 fn native_labels(app: &AppHandle) -> NativeLabels {
     app.state::<NativeLabelsState>()
         .labels
@@ -156,11 +315,72 @@ fn native_labels(app: &AppHandle) -> NativeLabels {
         .unwrap_or_default()
 }
 
+#[cfg(target_os = "windows")]
+fn suspend_desktop_binding(app: &AppHandle, window: &tauri::WebviewWindow) -> Result<(), String> {
+    let native_handle =
+        desktop_mode::top_level_window(window.hwnd().map_err(|error| error.to_string())?.0);
+    let attachment = {
+        let state = app.state::<WindowModeState>();
+        let mut data = state
+            .data
+            .lock()
+            .map_err(|_| "窗口模式状态不可用".to_string())?;
+        data.desktop_attachment.take()
+    };
+    if let Some(attachment) = attachment {
+        desktop_mode::detach(native_handle, attachment);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn resume_desktop_binding(app: &AppHandle, window: &tauri::WebviewWindow) -> Result<(), String> {
+    let native_handle =
+        desktop_mode::top_level_window(window.hwnd().map_err(|error| error.to_string())?.0);
+    let attachment = {
+        let state = app.state::<WindowModeState>();
+        let attachment = state
+            .data
+            .lock()
+            .map_err(|_| "窗口模式状态不可用".to_string())?
+            .desktop_attachment;
+        attachment
+    };
+    if let Some(attachment) = attachment {
+        desktop_mode::reapply(native_handle, attachment)?;
+        return Ok(());
+    }
+
+    let attachment = desktop_mode::attach(native_handle)?;
+    let state = app.state::<WindowModeState>();
+    state
+        .data
+        .lock()
+        .map_err(|_| "窗口模式状态不可用".to_string())?
+        .desktop_attachment = Some(attachment);
+    Ok(())
+}
+
 fn restore_and_focus(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
         #[cfg(target_os = "windows")]
         if let Ok(handle) = window.hwnd() {
             auto_hide::cancel_and_restore(app, handle.0);
+            if let Ok(position) = window.outer_position() {
+                if let Ok(size) = window.outer_size() {
+                    let (x, y) = safe_window_position(
+                        &window,
+                        position.x,
+                        position.y,
+                        size.width,
+                        size.height,
+                    );
+                    if (x, y) != (position.x, position.y) {
+                        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+                    }
+                }
+            }
+            ensure_minimum_window_size(&window);
         }
         window.show()?;
         window.unminimize()?;
@@ -180,27 +400,17 @@ fn restore_for_current_mode(app: &AppHandle) -> tauri::Result<()> {
         auto_hide::cancel_and_restore(app, handle.0);
     }
 
+    #[cfg(target_os = "windows")]
+    if mode == WindowMode::Desktop {
+        resume_desktop_binding(app, &window)
+            .map_err(|error| tauri::Error::Anyhow(std::io::Error::other(error).into()))?;
+    }
+
     window.show()?;
     window.unminimize()?;
 
     if mode != WindowMode::Desktop {
         return window.set_focus();
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let native_handle = desktop_mode::top_level_window(window.hwnd()?.0);
-        let attachment = {
-            let state = app.state::<WindowModeState>();
-            state
-                .data
-                .lock()
-                .ok()
-                .and_then(|data| data.desktop_attachment)
-        };
-        if let Some(attachment) = attachment {
-            let _ = desktop_mode::reapply(native_handle, attachment);
-        }
     }
     Ok(())
 }
@@ -239,6 +449,15 @@ fn read_window_mode(app: &AppHandle) -> Result<WindowMode, String> {
     Ok(data.mode)
 }
 
+#[cfg(target_os = "windows")]
+fn read_desktop_attachment(app: &AppHandle) -> Option<desktop_mode::DesktopAttachment> {
+    app.state::<WindowModeState>()
+        .data
+        .lock()
+        .ok()
+        .and_then(|data| data.desktop_attachment)
+}
+
 fn persist_window_state_for(
     app: &AppHandle,
     position: Option<(i32, i32)>,
@@ -254,10 +473,36 @@ fn persist_window_state_for(
     let (Some((x, y)), Some((width, height))) = (position, size) else {
         return;
     };
+    // Never overwrite a recoverable geometry with a stale monitor coordinate.
+    // Valid multi-monitor layouts can use negative coordinates, but an extreme
+    // value indicates the old off-screen/auto-hide persistence bug.
+    if x < -10_000 || y < -10_000 || x > 100_000 || y > 100_000 {
+        return;
+    }
     let mode = read_window_mode(app)
         .unwrap_or(WindowMode::Normal)
         .id()
         .to_string();
+    if mode == DESKTOP_MODE {
+        // A WorkerW child can temporarily report its Explorer host geometry.
+        // Preserve the last known top-level rectangle and update only the mode;
+        // never allow desktop-host dimensions to enter persisted app state.
+        let existing = store.window_state().ok().flatten();
+        let _ = store.save_window_state(&data::WindowStateDto {
+            x: existing.as_ref().map(|state| state.x).unwrap_or(100),
+            y: existing.as_ref().map(|state| state.y).unwrap_or(100),
+            width: existing
+                .as_ref()
+                .map(|state| state.width.max(DEFAULT_WINDOW_WIDTH))
+                .unwrap_or(DEFAULT_WINDOW_WIDTH),
+            height: existing
+                .as_ref()
+                .map(|state| state.height.max(DEFAULT_WINDOW_HEIGHT))
+                .unwrap_or(DEFAULT_WINDOW_HEIGHT),
+            mode,
+        });
+        return;
+    }
     let _ = store.save_window_state(&data::WindowStateDto {
         x,
         y,
@@ -289,6 +534,64 @@ fn persist_window_state(window: &tauri::Window) {
     );
 }
 
+#[cfg(target_os = "windows")]
+fn normalize_tracked_window_size(
+    window: &tauri::Window,
+    native_handle: windows_sys::Win32::Foundation::HWND,
+) {
+    let logical_size = window
+        .app_handle()
+        .state::<WindowModeState>()
+        .data
+        .lock()
+        .ok()
+        .and_then(|data| data.normal_size_dip);
+    let Some((logical_width, logical_height)) = logical_size else {
+        return;
+    };
+    let dpi = desktop_mode::target_monitor_dpi(native_handle);
+    let target_width =
+        (logical_width.max(DEFAULT_WINDOW_WIDTH as f64) * dpi as f64 / 96.0).round() as u32;
+    let target_height =
+        (logical_height.max(DEFAULT_WINDOW_HEIGHT as f64) * dpi as f64 / 96.0).round() as u32;
+    if window.outer_size().ok().is_some_and(|size| {
+        size.width.abs_diff(target_width) > 1 || size.height.abs_diff(target_height) > 1
+    }) {
+        let _ = window.set_size(tauri::PhysicalSize::new(target_width, target_height));
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn update_tracked_window_size(
+    window: &tauri::Window,
+    native_handle: windows_sys::Win32::Foundation::HWND,
+) {
+    let mode = read_window_mode(window.app_handle()).unwrap_or(WindowMode::Normal);
+    if mode == WindowMode::Desktop {
+        return;
+    }
+    let tracking_enabled = window
+        .app_handle()
+        .state::<WindowModeState>()
+        .data
+        .lock()
+        .map(|data| data.normal_size_dip.is_some() && data.user_resizing)
+        .unwrap_or(false);
+    if !tracking_enabled {
+        return;
+    }
+    let Ok(size) = window.outer_size() else {
+        return;
+    };
+    let dpi = desktop_mode::target_monitor_dpi(native_handle).max(96);
+    if let Ok(mut data) = window.app_handle().state::<WindowModeState>().data.lock() {
+        data.normal_size_dip = Some((
+            (size.width as f64 * 96.0 / dpi as f64).max(DEFAULT_WINDOW_WIDTH as f64),
+            (size.height as f64 * 96.0 / dpi as f64).max(DEFAULT_WINDOW_HEIGHT as f64),
+        ));
+    }
+}
+
 fn synchronize_tray_checks(app: &AppHandle, mode: WindowMode) {
     let controls_state = app.state::<TrayModeControlsState>();
     let controls = match controls_state.controls.lock() {
@@ -307,6 +610,7 @@ fn synchronize_tray_checks(app: &AppHandle, mode: WindowMode) {
     let _ = controls.topmost.set_text(labels.topmost.clone());
     let _ = controls.normal.set_text(labels.normal.clone());
     let _ = controls.desktop.set_text(labels.desktop);
+    let _ = controls.quit.set_text(labels.quit);
     let _ = controls.topmost.set_checked(mode == WindowMode::Topmost);
     let _ = controls.normal.set_checked(mode == WindowMode::Normal);
     let _ = controls.desktop.set_checked(mode == WindowMode::Desktop);
@@ -330,19 +634,35 @@ fn apply_window_mode(app: &AppHandle, target_mode: WindowMode) -> Result<WindowM
     auto_hide::cancel_and_restore(app, native_handle);
 
     let state = app.state::<WindowModeState>();
-    let mut data = state
-        .data
-        .lock()
-        .map_err(|_| "窗口模式状态不可用".to_string())?;
+    let (previous_mode, desktop_attachment) = {
+        let mut data = state
+            .data
+            .lock()
+            .map_err(|_| "窗口模式状态不可用".to_string())?;
+        if data.mode == target_mode {
+            #[cfg(target_os = "windows")]
+            auto_hide::recheck_after_mode_change(
+                app.clone(),
+                native_handle,
+                target_mode != WindowMode::Desktop,
+            );
+            return Ok(target_mode);
+        }
+        (data.mode, data.desktop_attachment.take())
+    };
 
-    if data.mode == target_mode {
-        return Ok(target_mode);
+    let was_visible = window.is_visible().unwrap_or(true);
+
+    #[cfg(target_os = "windows")]
+    if let Some(attachment) = desktop_attachment {
+        let _ = window.hide();
+        desktop_mode::detach(native_handle, attachment);
     }
 
     #[cfg(target_os = "windows")]
-    if let Some(attachment) = data.desktop_attachment.take() {
-        desktop_mode::detach(native_handle, attachment);
-    }
+    let mut next_desktop_attachment = None;
+    #[cfg(target_os = "windows")]
+    let mut desktop_display_scale = None;
 
     match target_mode {
         WindowMode::Topmost => {
@@ -351,17 +671,14 @@ fn apply_window_mode(app: &AppHandle, target_mode: WindowMode) -> Result<WindowM
                 .map_err(|error| error.to_string())?;
         }
         WindowMode::Normal => {
-            if data.mode == WindowMode::Topmost {
+            if previous_mode == WindowMode::Topmost {
                 window
                     .set_always_on_top(false)
                     .map_err(|error| error.to_string())?;
             }
         }
         WindowMode::Desktop => {
-            // Calling Tauri's no-op "unset topmost" on an already normal window
-            // can asynchronously restore its parent to the desktop root. Only do
-            // it when a real topmost state must be cleared.
-            if data.mode == WindowMode::Topmost {
+            if previous_mode == WindowMode::Topmost {
                 window
                     .set_always_on_top(false)
                     .map_err(|error| error.to_string())?;
@@ -369,10 +686,12 @@ fn apply_window_mode(app: &AppHandle, target_mode: WindowMode) -> Result<WindowM
             #[cfg(target_os = "windows")]
             {
                 match desktop_mode::attach(native_handle) {
-                    Ok(attachment) => data.desktop_attachment = Some(attachment),
+                    Ok(attachment) => {
+                        desktop_display_scale =
+                            Some(desktop_mode::adapt_to_monitor(native_handle, attachment));
+                        next_desktop_attachment = Some(attachment);
+                    }
                     Err(error) => {
-                        // A failed native reparent must never strand the test
-                        // window beneath the desktop icons.
                         let _ = window.show();
                         let _ = window.unminimize();
                         let _ = window.set_focus();
@@ -385,14 +704,44 @@ fn apply_window_mode(app: &AppHandle, target_mode: WindowMode) -> Result<WindowM
         }
     }
 
-    data.mode = target_mode;
-    drop(data);
+    {
+        let mut data = state
+            .data
+            .lock()
+            .map_err(|_| "窗口模式状态不可用".to_string())?;
+        data.mode = target_mode;
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(attachment) = next_desktop_attachment {
+                data.normal_size_dip = attachment.original_logical_size();
+            }
+            data.desktop_attachment = next_desktop_attachment;
+        }
+    }
+    if was_visible && target_mode != WindowMode::Desktop {
+        let _ = window.show();
+        let _ = window.unminimize();
+    }
+    #[cfg(target_os = "windows")]
+    if target_mode != WindowMode::Desktop {
+        let _ = window_shape::disable_maximization(native_handle);
+        let _ = window_shape::apply_rounded_region(native_handle);
+        ensure_minimum_window_size(&window);
+    }
     #[cfg(target_os = "windows")]
     auto_hide::recheck_after_mode_change(
         app.clone(),
         native_handle,
         target_mode != WindowMode::Desktop,
     );
+    #[cfg(target_os = "windows")]
+    desktop_mode::refresh_window_surface(native_handle);
+    #[cfg(target_os = "windows")]
+    if let Some(scale) = desktop_display_scale {
+        let _ = app.emit("desktop-display-scale-changed", scale);
+    } else if target_mode != WindowMode::Desktop {
+        let _ = app.emit("desktop-display-scale-changed", 1.0f64);
+    }
     Ok(target_mode)
 }
 
@@ -408,6 +757,37 @@ fn set_window_mode(app: AppHandle, mode: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn refresh_window_surface(app: AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window(MAIN_WINDOW)
+        .ok_or_else(|| "主窗口不可用".to_string())?;
+    #[cfg(target_os = "windows")]
+    {
+        let handle = window.hwnd().map_err(|error| error.to_string())?.0;
+        desktop_mode::refresh_window_surface(desktop_mode::top_level_window(handle));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn desktop_display_scale(app: AppHandle) -> Result<f64, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let window = app
+            .get_webview_window(MAIN_WINDOW)
+            .ok_or_else(|| "主窗口不可用".to_string())?;
+        let handle = window.hwnd().map_err(|error| error.to_string())?.0;
+        if let Some(attachment) = read_desktop_attachment(&app) {
+            return Ok(desktop_mode::adapt_to_monitor(
+                desktop_mode::top_level_window(handle),
+                attachment,
+            ));
+        }
+    }
+    Ok(1.0)
+}
+
+#[tauri::command]
 fn hide_to_tray(app: AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window(MAIN_WINDOW)
@@ -416,7 +796,10 @@ fn hide_to_tray(app: AppHandle) -> Result<(), String> {
     if let Ok(handle) = window.hwnd() {
         auto_hide::cancel_and_restore(&app, handle.0);
     }
-    window.hide().map_err(|error| error.to_string())
+    #[cfg(target_os = "windows")]
+    suspend_desktop_binding(&app, &window)?;
+    window.hide().map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -452,9 +835,15 @@ fn start_window_resize(window: tauri::WebviewWindow) -> Result<(), String> {
         };
 
         let native_handle = window.hwnd().map_err(|error| error.to_string())?.0;
+        if let Ok(mut data) = window.app_handle().state::<WindowModeState>().data.lock() {
+            data.user_resizing = true;
+        }
         unsafe {
             ReleaseCapture();
             SendMessageW(native_handle, WM_NCLBUTTONDOWN, HTBOTTOMRIGHT as usize, 0);
+        }
+        if let Ok(mut data) = window.app_handle().state::<WindowModeState>().data.lock() {
+            data.user_resizing = false;
         }
         Ok(())
     }
@@ -476,6 +865,56 @@ fn load_bootstrap_data(store: tauri::State<'_, DataStore>) -> Result<data::Boots
 }
 
 #[tauri::command]
+fn mcp_status(
+    state: tauri::State<'_, mcp_service::McpServiceState>,
+) -> mcp_service::McpServiceSnapshot {
+    state.verified_snapshot()
+}
+
+fn mcp_connection_listener(app: &AppHandle) -> mcp_service::McpConnectionListener {
+    let event_app = app.clone();
+    std::sync::Arc::new(move |connected| {
+        let _ = event_app.emit("mylist-mcp-ai-connection-changed", connected);
+    })
+}
+
+#[tauri::command]
+fn set_mcp_enabled(
+    app: AppHandle,
+    store: tauri::State<'_, DataStore>,
+    state: tauri::State<'_, mcp_service::McpServiceState>,
+    enabled: bool,
+) -> Result<mcp_service::McpServiceSnapshot, String> {
+    let previous = store.mcp_enabled().map_err(|error| error.to_string())?;
+    let snapshot = if enabled {
+        let bridge_app = app.clone();
+        let handler = std::sync::Arc::new(move |line: &str| {
+            mcp_bridge::handle_request(Some(&bridge_app), line)
+        });
+        state.start_with_handler(Some(handler), Some(mcp_connection_listener(&app)))?;
+        state.verified_snapshot()
+    } else {
+        state.stop()
+    };
+    if enabled && snapshot.status != mcp_service::McpServiceStatus::Online {
+        return Err("mcp_start_failed".into());
+    }
+    if let Err(error) = store.save_mcp_enabled(enabled) {
+        if previous {
+            let bridge_app = app.clone();
+            let handler = std::sync::Arc::new(move |line: &str| {
+                mcp_bridge::handle_request(Some(&bridge_app), line)
+            });
+            let _ = state.start_with_handler(Some(handler), Some(mcp_connection_listener(&app)));
+        } else {
+            state.stop();
+        }
+        return Err(error.to_string());
+    }
+    Ok(snapshot)
+}
+
+#[tauri::command]
 fn load_external_locale(
     app: AppHandle,
     locale: String,
@@ -486,6 +925,16 @@ fn load_external_locale(
 #[tauri::command]
 fn save_theme_setting(store: tauri::State<'_, DataStore>, theme: String) -> Result<String, String> {
     store.save_theme(&theme).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_interface_transparency_setting(
+    store: tauri::State<'_, DataStore>,
+    transparency: u8,
+) -> Result<u8, String> {
+    store
+        .save_interface_transparency(transparency)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -550,6 +999,48 @@ fn copy_text(app: AppHandle, text: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn read_clipboard_text(app: AppHandle) -> Result<String, String> {
+    app.clipboard()
+        .read_text()
+        .map_err(|_| "读取剪贴板失败".to_string())
+}
+
+#[tauri::command]
+fn mcp_install_prompt(app: AppHandle, locale: String) -> Result<String, String> {
+    const FILE_NAME: &str = "Install MCP and Skill.en.md";
+    let resource = app
+        .path()
+        .resource_dir()
+        .map_err(|_| "安装引导文档不可用".to_string())?
+        .join("docs")
+        .join(FILE_NAME);
+    let guide = if resource.exists() {
+        resource
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("docs")
+            .join(FILE_NAME)
+    };
+    if !guide.exists() {
+        return Err("安装引导文档不可用".to_string());
+    }
+    let guide = guide.to_string_lossy();
+    let guide = guide.strip_prefix(r"\\?\").unwrap_or(&guide);
+    let instruction = match locale.as_str() {
+        "zh-TW" => "按此文檔設定 MyLIST MCP 和 Skill：",
+        "de" => "MyLIST MCP und Skill nach dieser Anleitung einrichten:",
+        "fr" => "Configurez MyLIST MCP et le Skill avec ce guide :",
+        "it" => "Configura MyLIST MCP e Skill con questa guida:",
+        "es" => "Configura MyLIST MCP y la Skill con esta guía:",
+        "ja" => "この手順で MyLIST MCP と Skill を設定：",
+        "en" => "Configure MyLIST MCP and Skill using this guide:",
+        _ => "按此文档配置 MyLIST MCP 和 Skill：",
+    };
+    Ok(format!("{instruction}\n{guide}\n"))
+}
+
+#[tauri::command]
 fn export_plaintext_snapshot(
     app: AppHandle,
     store: tauri::State<'_, DataStore>,
@@ -592,6 +1083,69 @@ fn export_encrypted_snapshot(
         .write_encrypted_export(&unique_path, &password)
         .map_err(|error| error.to_string())?;
     Ok(Some(unique_path.to_string_lossy().into_owned()))
+}
+
+/// Executes an export that was requested by an MCP client. The save dialog and
+/// optional password stay in the desktop process; the MCP client only sees the
+/// final file name through `mylist_get_operation`.
+#[tauri::command]
+fn mcp_export_snapshot(
+    app: AppHandle,
+    store: tauri::State<'_, DataStore>,
+    transfers: tauri::State<'_, mcp_transfer::McpTransferState>,
+    operation_id: String,
+    password: Option<String>,
+) -> Result<(), String> {
+    let operation = transfers
+        .get(&operation_id)
+        .map_err(|error| mcp::error(error, false).code)?;
+    let encrypted = operation.operation == "export_encrypted";
+    if (!encrypted && password.is_some()) || (encrypted && password.is_none()) {
+        return Err(mcp::error(mcp::McpErrorCode::OperationRejected, false).code);
+    }
+    transfers
+        .assert_operation(&operation_id, &operation.operation)
+        .map_err(|error| mcp::error(error, false).code)?;
+    let Some(path) = app
+        .dialog()
+        .file()
+        .add_filter(
+            if encrypted {
+                native_labels(&app).encrypted_file
+            } else {
+                native_labels(&app).plaintext_file
+            },
+            if encrypted { &["dtodo"] } else { &["json"] },
+        )
+        .set_file_name(if encrypted {
+            format!("MyLIST_data_{}.dtodo", local_export_date())
+        } else {
+            format!("MyLIST_data_{}.dtodo.json", local_export_date())
+        })
+        .blocking_save_file()
+    else {
+        transfers
+            .cancel(&operation_id)
+            .map_err(|error| mcp::error(error, false).code)?;
+        return Ok(());
+    };
+    let path = path.into_path().map_err(|_| "导出路径不可用".to_string())?;
+    let unique_path = unique_export_path(&path);
+    let write = match password.as_deref() {
+        Some(password) => store.write_encrypted_export(&unique_path, password),
+        None => store.write_plaintext_export(&unique_path),
+    };
+    if let Err(error) = write {
+        let _ = transfers.fail(&operation_id, "EXPORT_FAILED");
+        return Err(error.to_string());
+    }
+    let file_name = unique_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("MyLIST_data");
+    transfers
+        .complete(&operation_id, serde_json::json!({"fileName": file_name}))
+        .map_err(|error| mcp::error(error, false).code)
 }
 
 fn unique_export_path(path: &Path) -> PathBuf {
@@ -656,6 +1210,15 @@ fn preview_plaintext_import(
     store: tauri::State<'_, DataStore>,
     operation: String,
 ) -> Result<Option<ImportSelectionDto>, String> {
+    preview_plaintext_import_with_session(app, store, operation, None)
+}
+
+fn preview_plaintext_import_with_session(
+    app: AppHandle,
+    store: tauri::State<'_, DataStore>,
+    operation: String,
+    session_id: Option<String>,
+) -> Result<Option<ImportSelectionDto>, String> {
     if !matches!(operation.as_str(), "merge" | "replace") {
         return Err("不支持的导入方式".to_string());
     }
@@ -674,7 +1237,7 @@ fn preview_plaintext_import(
         .unwrap_or("导入数据")
         .to_string();
     let encoded = fs::read(&path).map_err(|error| format!("无法读取导入文件：{error}"))?;
-    let session_id = uuid::Uuid::new_v4().to_string();
+    let session_id = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let state = app.state::<PendingImportState>();
     let mut pending = state
         .pending
@@ -715,6 +1278,47 @@ fn preview_plaintext_import(
         operation,
         preview: Some(preview),
     }))
+}
+
+#[tauri::command]
+fn mcp_preview_import(
+    app: AppHandle,
+    store: tauri::State<'_, DataStore>,
+    transfers: tauri::State<'_, mcp_transfer::McpTransferState>,
+    operation_id: String,
+) -> Result<Option<ImportSelectionDto>, String> {
+    let operation = transfers
+        .get(&operation_id)
+        .map_err(|error| mcp::error(error, false).code)?;
+    let import_mode = match operation.operation.as_str() {
+        "import_merge" => "merge",
+        "import_replace" => "replace",
+        _ => return Err(mcp::error(mcp::McpErrorCode::OperationRejected, false).code),
+    };
+    transfers
+        .assert_operation(&operation_id, &operation.operation)
+        .map_err(|error| mcp::error(error, false).code)?;
+    let selection = preview_plaintext_import_with_session(
+        app,
+        store,
+        import_mode.to_string(),
+        Some(operation_id.clone()),
+    )?;
+    if let Some(selection) = selection.as_ref() {
+        if let Some(preview) = selection.preview.as_ref() {
+            transfers
+                .set_preview(
+                    &operation_id,
+                    serde_json::to_value(preview).map_err(|_| "导入预检不可用")?,
+                )
+                .map_err(|error| mcp::error(error, false).code)?;
+        }
+    } else {
+        transfers
+            .cancel(&operation_id)
+            .map_err(|error| mcp::error(error, false).code)?;
+    }
+    Ok(selection)
 }
 
 #[tauri::command]
@@ -762,6 +1366,24 @@ fn preview_pending_encrypted_import(
 }
 
 #[tauri::command]
+fn mcp_preview_pending_encrypted_import(
+    app: AppHandle,
+    store: tauri::State<'_, DataStore>,
+    transfers: tauri::State<'_, mcp_transfer::McpTransferState>,
+    operation_id: String,
+    password: String,
+) -> Result<data::ImportPreviewDto, String> {
+    let preview = preview_pending_encrypted_import(app, store, operation_id.clone(), password)?;
+    transfers
+        .set_preview(
+            &operation_id,
+            serde_json::to_value(&preview).map_err(|_| "导入预检不可用")?,
+        )
+        .map_err(|error| mcp::error(error, false).code)?;
+    Ok(preview)
+}
+
+#[tauri::command]
 fn apply_pending_plaintext_import(
     app: AppHandle,
     store: tauri::State<'_, DataStore>,
@@ -798,6 +1420,45 @@ fn apply_pending_plaintext_import(
         .map_err(|_| "导入状态不可用".to_string())?;
     *pending = None;
     Ok(result)
+}
+
+#[tauri::command]
+fn mcp_apply_import(
+    app: AppHandle,
+    store: tauri::State<'_, DataStore>,
+    transfers: tauri::State<'_, mcp_transfer::McpTransferState>,
+    operation_id: String,
+) -> Result<data::ImportResultDto, String> {
+    let transfer = transfers
+        .get(&operation_id)
+        .map_err(|error| mcp::error(error, false).code)?;
+    let operation = match transfer.operation.as_str() {
+        "import_merge" => "merge",
+        "import_replace" => "replace",
+        _ => return Err(mcp::error(mcp::McpErrorCode::OperationRejected, false).code),
+    };
+    if transfer.status != "awaiting_confirmation" {
+        return Err(mcp::error(mcp::McpErrorCode::ConfirmationRequired, false).code);
+    }
+    let result =
+        apply_pending_plaintext_import(app, store, operation_id.clone(), operation.to_string())?;
+    transfers
+        .complete(
+            &operation_id,
+            serde_json::to_value(&result).map_err(|_| "导入结果不可用")?,
+        )
+        .map_err(|error| mcp::error(error, false).code)?;
+    Ok(result)
+}
+
+#[tauri::command]
+fn cancel_mcp_transfer(
+    transfers: tauri::State<'_, mcp_transfer::McpTransferState>,
+    operation_id: String,
+) -> Result<(), String> {
+    transfers
+        .cancel(&operation_id)
+        .map_err(|error| mcp::error(error, false).code)
 }
 
 #[tauri::command]
@@ -868,6 +1529,24 @@ fn update_task(
 }
 
 #[tauri::command]
+fn save_task_recurrence(
+    store: tauri::State<'_, DataStore>,
+    id: String,
+    recurrence: Option<data::RecurrenceConfig>,
+) -> Result<data::TaskDto, String> {
+    store
+        .save_task_recurrence(&id, recurrence)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn settle_due_recurrences(store: tauri::State<'_, DataStore>) -> Result<usize, String> {
+    store
+        .settle_due_recurrences()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 fn set_task_status(
     store: tauri::State<'_, DataStore>,
     id: String,
@@ -915,6 +1594,7 @@ fn configure_tray(app: &tauri::App) -> tauri::Result<()> {
             topmost: topmost_item,
             normal: normal_item,
             desktop: desktop_item,
+            quit: quit_item,
         });
     }
 
@@ -949,6 +1629,11 @@ fn configure_tray(app: &tauri::App) -> tauri::Result<()> {
             } else if event.id.as_ref() == OPEN_MAIN {
                 let _ = open_main_from_tray(app);
             } else if event.id.as_ref() == QUIT {
+                #[cfg(target_os = "windows")]
+                if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+                    let _ = window.hide();
+                    let _ = suspend_desktop_binding(app, &window);
+                }
                 app.exit(0);
             }
         })
@@ -970,9 +1655,12 @@ fn configure_tray(app: &tauri::App) -> tauri::Result<()> {
 pub fn run() {
     let builder = tauri::Builder::default()
         .manage(WindowModeState::default())
+        .manage(mcp_service::McpServiceState::default())
         .manage(TrayModeControlsState::default())
         .manage(NativeLabelsState::default())
         .manage(PendingImportState::default())
+        .manage(mcp_confirmation::McpConfirmationState::default())
+        .manage(mcp_transfer::McpTransferState::default())
         .plugin(
             tauri_plugin_autostart::Builder::new()
                 .app_name("MyLIST")
@@ -982,7 +1670,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init());
     #[cfg(target_os = "windows")]
     let builder = builder.manage(auto_hide::AutoHideState::default());
-    builder
+    let app = builder
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             let _ = restore_for_current_mode(app);
         }))
@@ -997,15 +1685,22 @@ pub fn run() {
                 let _ = app.autolaunch().enable();
             }
             app.manage(store);
+            if app.state::<DataStore>().mcp_enabled().unwrap_or(false) {
+                let bridge_app = app.handle().clone();
+                let handler = std::sync::Arc::new(move |line: &str| {
+                    mcp_bridge::handle_request(Some(&bridge_app), line)
+                });
+                let _ = app
+                    .state::<mcp_service::McpServiceState>()
+                    .start_with_handler(Some(handler), Some(mcp_connection_listener(app.handle())));
+            }
             native_i18n::ensure_external_locale_files(app.handle())?;
             #[cfg(target_os = "windows")]
             if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
                 if let Some(saved) = saved_window_state.as_ref() {
-                    let _ = window.set_size(tauri::PhysicalSize::new(
-                        saved.width.max(350),
-                        saved.height.max(530),
-                    ));
-                    let _ = window.set_position(tauri::PhysicalPosition::new(saved.x, saved.y));
+                    restore_window_geometry(&window, saved);
+                } else {
+                    ensure_minimum_window_size(&window);
                 }
                 let native_handle = desktop_mode::top_level_window(
                     window.hwnd().map_err(|error| error.to_string())?.0,
@@ -1031,6 +1726,10 @@ pub fn run() {
                 if let Ok(handle) = window.hwnd() {
                     auto_hide::cancel_and_restore(window.app_handle(), handle.0);
                 }
+                #[cfg(target_os = "windows")]
+                if let Some(webview) = window.app_handle().get_webview_window(MAIN_WINDOW) {
+                    let _ = suspend_desktop_binding(window.app_handle(), &webview);
+                }
                 persist_window_state(window);
                 let _ = window.hide();
             }
@@ -1038,8 +1737,20 @@ pub fn run() {
             {
                 #[cfg(target_os = "windows")]
                 if let Ok(handle) = window.hwnd() {
-                    persist_window_state(window);
                     let mode = read_window_mode(window.app_handle()).unwrap_or(WindowMode::Normal);
+                    if mode == WindowMode::Desktop {
+                        let native_handle = desktop_mode::top_level_window(handle.0);
+                        if let Some(attachment) = read_desktop_attachment(window.app_handle()) {
+                            let scale = desktop_mode::adapt_to_monitor(native_handle, attachment);
+                            let _ = window
+                                .app_handle()
+                                .emit("desktop-display-scale-changed", scale);
+                        }
+                        desktop_mode::refresh_window_surface(native_handle);
+                    } else {
+                        normalize_tracked_window_size(window, handle.0);
+                    }
+                    persist_window_state(window);
                     auto_hide::on_window_moved(
                         window.app_handle().clone(),
                         handle.0,
@@ -1047,11 +1758,26 @@ pub fn run() {
                     );
                 }
             }
+            WindowEvent::Focused(_) =>
+            {
+                #[cfg(target_os = "windows")]
+                if let Ok(handle) = window.hwnd() {
+                    let native_handle = desktop_mode::top_level_window(handle.0);
+                    if read_window_mode(window.app_handle()).unwrap_or(WindowMode::Normal)
+                        != WindowMode::Desktop
+                    {
+                        let _ = window_shape::disable_maximization(native_handle);
+                        let _ = window_shape::apply_rounded_region(native_handle);
+                    }
+                    desktop_mode::refresh_window_surface(native_handle);
+                }
+            }
             WindowEvent::Resized(_) => {
                 #[cfg(target_os = "windows")]
                 if let Ok(window_handle) = window.hwnd() {
                     let native_handle = desktop_mode::top_level_window(window_handle.0);
                     let _ = window_shape::apply_rounded_region(native_handle);
+                    update_tracked_window_size(window, native_handle);
                 }
                 persist_window_state(window);
             }
@@ -1059,22 +1785,34 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             set_window_mode,
+            refresh_window_surface,
+            desktop_display_scale,
             hide_to_tray,
             start_window_drag,
             start_window_resize,
             window_mode,
             load_bootstrap_data,
+            mcp_status,
+            set_mcp_enabled,
             load_external_locale,
             save_theme_setting,
+            save_interface_transparency_setting,
             save_locale_setting,
             sync_native_labels,
             set_startup_enabled,
             copy_text,
+            read_clipboard_text,
+            mcp_install_prompt,
             export_plaintext_snapshot,
             export_encrypted_snapshot,
+            mcp_export_snapshot,
             preview_plaintext_import,
+            mcp_preview_import,
             preview_pending_encrypted_import,
+            mcp_preview_pending_encrypted_import,
             apply_pending_plaintext_import,
+            mcp_apply_import,
+            cancel_mcp_transfer,
             create_category,
             update_category,
             delete_category,
@@ -1083,11 +1821,25 @@ pub fn run() {
             get_task,
             create_task,
             update_task,
+            save_task_recurrence,
+            settle_due_recurrences,
             set_task_status,
-            delete_task
+            delete_task,
+            approve_mcp_confirmation,
+            reject_mcp_confirmation
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+    app.run(|app_handle, event| {
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            app_handle
+                .state::<mcp_service::McpServiceState>()
+                .shutdown();
+        }
+    });
 }
 
 #[cfg(test)]

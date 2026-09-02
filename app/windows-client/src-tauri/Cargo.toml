@@ -1,6 +1,6 @@
 [package]
 name = "windows-client"
-version = "0.1.0"
+version = "1.2.0"
 description = "MyLIST is a local-first Windows desktop to-do application."
 authors = ["Kyo"]
 edition = "2021"
@@ -31,6 +31,7 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 base64 = "0.22"
 rand = "0.8"
+chrono = "0.4"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }

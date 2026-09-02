@@ -311,6 +311,22 @@ pub fn recheck_after_mode_change(app: AppHandle, hwnd: HWND, enabled: bool) {
     on_window_moved(app, hwnd, enabled);
 }
 
+/// Returns true while the native window is temporarily outside its saved
+/// rectangle. Persistence callers use this guard so a collapsed edge position
+/// can never overwrite the user's full window position.
+pub fn is_collapsed_or_animating(app: &AppHandle) -> bool {
+    app.state::<AutoHideState>()
+        .data
+        .lock()
+        .map(|state| {
+            matches!(
+                state.phase,
+                Phase::Collapsing | Phase::Collapsed | Phase::Expanding
+            )
+        })
+        .unwrap_or(false)
+}
+
 /// Runs one low-cost monitor loop for the application's lifetime. It only reads
 /// cursor coordinates when an auto-hidden window is active, avoiding a global hook.
 pub fn start_cursor_monitor(app: AppHandle, hwnd: HWND) {

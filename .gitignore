@@ -10,6 +10,7 @@ Thumbs.db
 **/src-tauri/target/
 **/src-tauri/target-i18n/
 **/src-tauri/target-language/
+**/target-uninstaller/
 
 # Local app data, exported backups, signing materials and private configuration
 *.dtodo
@@ -28,3 +29,8 @@ Thumbs.db
 *.log
 *.tmp
 *.bak
+
+# Local release archive. It is generated from committed source and is not source code.
+/releases/
+/temp/
+/app/windows-client/artifacts/

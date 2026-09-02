@@ -55,18 +55,63 @@ pub fn ensure_external_locale_files(app: &AppHandle) -> Result<(), String> {
     let directory = locale_directory(app)?;
     for (locale, source) in LOCALE_SOURCES {
         let path = directory.join(format!("{locale}.ts"));
-        let should_seed = !path.exists()
-            || fs::read_to_string(&path)
-                .ok()
-                .and_then(|existing| parse_message_lines(&existing).ok())
-                .map(|messages| messages.is_empty())
-                .unwrap_or(false);
-        if should_seed {
+        let existing = fs::read_to_string(&path).ok();
+        let existing_messages = existing
+            .as_deref()
+            .and_then(|value| parse_message_lines(value).ok());
+        let baseline_messages = parse_message_lines(source)?;
+
+        let Some(messages) = existing_messages else {
             fs::write(&path, locale_seed_source(locale, source))
                 .map_err(|_| "locale_file_write_failed".to_string())?;
+            continue;
+        };
+        if messages.is_empty() {
+            fs::write(&path, locale_seed_source(locale, source))
+                .map_err(|_| "locale_file_write_failed".to_string())?;
+            continue;
+        }
+
+        // Keep translator edits intact, but automatically add keys introduced
+        // by a later app update. Without this merge, a new Chinese key falls
+        // through to the English safety catalog until every external file has
+        // been edited by hand.
+        if baseline_messages
+            .keys()
+            .any(|key| !messages.contains_key(key))
+        {
+            let merged = merge_missing_messages(source, &messages);
+            fs::write(&path, merged).map_err(|_| "locale_file_write_failed".to_string())?;
         }
     }
     Ok(())
+}
+
+/// Rebuilds an outdated external catalog using the current, grouped source
+/// layout while retaining every existing translated message value.
+fn merge_missing_messages(source: &str, existing: &BTreeMap<String, String>) -> String {
+    let mut merged = String::new();
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some((key_fragment, _)) = trimmed
+            .strip_prefix('"')
+            .and_then(|line| line.split_once("\":"))
+        {
+            let key = key_fragment.trim_matches('"');
+            if let Some(value) = existing.get(key) {
+                merged.push_str("  \"");
+                merged.push_str(key);
+                merged.push_str("\": ");
+                merged
+                    .push_str(&serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string()));
+                merged.push_str(",\n");
+                continue;
+            }
+        }
+        merged.push_str(line);
+        merged.push('\n');
+    }
+    merged
 }
 
 pub fn read_external_messages(
