@@ -33,7 +33,6 @@ type TextContextMenuState = { control: TextControl; x: number; y: number; hasSel
 const icon = (name: string) => `/icons/${name}`;
 // All two-stage confirmation exits use the same cadence: collapse, then shrink away.
 const CONFIRM_TRANSITION_MS = 200;
-const TASK_STATUS_EXIT_MS = 600;
 
 const defaultCategoryLabelKeys: Record<DefaultCategoryKey, Parameters<typeof t>[0]> = {
   personal: "category.default.personal",
@@ -278,8 +277,39 @@ export default function App() {
   async function cancelMcpTransfer() { const active = mcpTransfer; setMcpTransfer(null); setImportPreview(null); setEncryptedImport(null); setExportDialogOpen(false); if (active) { try { await invoke("cancel_mcp_transfer", { operationId: active.operationId }); } catch { /* The client may have already completed or expired the operation. */ } } }
   async function exportMcpData(password?: string) { const active = mcpTransfer; if (!active) return false; try { await invoke("mcp_export_snapshot", { operationId: active.operationId, password: password ?? null }); setMcpTransfer(null); showNotice(password ? t("notice.exportedEncrypted") : t("notice.exported")); return true; } catch (error) { showError(error); return false; } }
   const cycleMode = () => void setWindowMode(mode === "mode-normal" ? "mode-topmost" : mode === "mode-topmost" ? "mode-desktop" : "mode-normal");
-  async function setTaskStatus(task: Task, next: Status): Promise<boolean> { try { await invoke<Task>("set_task_status", { id: task.id, status: next }); await refreshTasks(); setPage("home"); showNotice(next === "completed" ? t("notice.taskCompleted") : t("notice.taskMoved")); return true; } catch (error) { showError(error); return false; } }
-  async function removeTask(task: Task) { try { await invoke("delete_task", { id: task.id }); await refreshTasks(); setPage("home"); showNotice(t("notice.taskDeleted")); } catch (error) { showError(error); } }
+  async function setTaskStatus(task: Task, next: Status): Promise<boolean> {
+    const movedTask = { ...task, status: next, completedAtUtcMs: next === "completed" ? Date.now() : null, updatedAtUtcMs: Date.now() };
+    setTasks((current) => ({
+      ...current,
+      [task.status]: current[task.status].filter((item) => item.id !== task.id),
+      [next]: [movedTask, ...current[next].filter((item) => item.id !== task.id)],
+    }));
+    setPage("home");
+    showNotice(next === "completed" ? t("notice.taskCompleted") : t("notice.taskMoved"));
+    try {
+      await invoke<Task>("set_task_status", { id: task.id, status: next });
+      await refreshTasks();
+      return true;
+    } catch (error) {
+      await refreshTasks();
+      showError(error);
+      return false;
+    }
+  }
+  async function removeTask(task: Task): Promise<boolean> {
+    setTasks((current) => ({ ...current, [task.status]: current[task.status].filter((item) => item.id !== task.id) }));
+    setPage("home");
+    showNotice(t("notice.taskDeleted"));
+    try {
+      await invoke("delete_task", { id: task.id });
+      await refreshTasks();
+      return true;
+    } catch (error) {
+      await refreshTasks();
+      showError(error);
+      return false;
+    }
+  }
   async function approveMcpConfirmation(token: string) { try { await invoke("approve_mcp_confirmation", { token }); setMcpConfirmation(null); } catch (error) { showError(error); } }
   async function rejectMcpConfirmation(token: string) { try { await invoke("reject_mcp_confirmation", { token }); } catch (error) { showError(error); } finally { setMcpConfirmation(null); } }
   function openTask(task: Task) { setSelectedTask(task); setPage("view"); }
@@ -303,7 +333,7 @@ export default function App() {
     {importPreview && <ImportPreviewDialog preview={importPreview} operation={importOperation} theme={theme} onApply={applyPlaintextImport} onClose={() => { if (mcpTransfer?.operationId === importPreview.sessionId) void cancelMcpTransfer(); else setImportPreview(null); }} />}
     {encryptedImport && <EncryptedImportPasswordDialog theme={theme} request={encryptedImport} onClose={() => { if (mcpTransfer?.operationId === encryptedImport.sessionId) void cancelMcpTransfer(); else setEncryptedImport(null); }} onPreview={previewEncryptedImport} />}
     {exportDialogOpen && <ExportDataDialog theme={theme} lockedEncrypted={mcpTransfer ? mcpTransfer.operation === "export_encrypted" : undefined} onClose={() => { if (mcpTransfer) void cancelMcpTransfer(); else setExportDialogOpen(false); }} onExportPlaintext={mcpTransfer ? () => exportMcpData() : exportPlaintextData} onExportEncrypted={mcpTransfer ? exportMcpData : exportEncryptedData} />}
-    {todoDeleteConfirmation && <TodoTaskDeleteDialog theme={theme} task={todoDeleteConfirmation} onCancel={() => setTodoDeleteConfirmation(null)} onConfirm={async () => { const task = todoDeleteConfirmation; if (!task) return false; try { await invoke("delete_task", { id: task.id }); await refreshTasks(); setTodoDeleteConfirmation(null); showNotice(t("notice.taskDeleted")); return true; } catch (error) { showError(error); return false; } }} />}
+    {todoDeleteConfirmation && <TodoTaskDeleteDialog theme={theme} task={todoDeleteConfirmation} onCancel={() => setTodoDeleteConfirmation(null)} onConfirm={async () => { const task = todoDeleteConfirmation; if (!task) return false; setTodoDeleteConfirmation(null); void removeTask(task); return true; }} />}
     {mcpConfirmation && <McpDestructiveConfirmationDialog theme={theme} confirmation={mcpConfirmation} onApprove={approveMcpConfirmation} onReject={rejectMcpConfirmation} />}
     <TextContextMenu theme={theme} />
   </main>;
@@ -810,11 +840,9 @@ function TaskRow({ task, theme, onOpen, onEdit, onCopy, onStatus, onDelete }: { 
       setCollapsing(null);
       setStatusExiting(true);
       if (timerRef.current) window.clearTimeout(timerRef.current);
-      timerRef.current = window.setTimeout(() => {
-        void onStatus().then((changed) => {
-          if (!changed) { setStatusExiting(false); setTransitionLocked(false); }
-        });
-      }, TASK_STATUS_EXIT_MS);
+      void onStatus().then((changed) => {
+        if (!changed) { setStatusExiting(false); setTransitionLocked(false); }
+      });
       return;
     }
     if (confirming === "delete") { switchConfirmation("status"); return; }
