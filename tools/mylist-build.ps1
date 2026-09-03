@@ -10,14 +10,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$ExpectedRoot = 'E:\Codex\Todo_List'
 $ClientRoot = Join-Path $RepoRoot 'app\windows-client'
 $ReleaseRoot = Join-Path $RepoRoot 'releases'
 $TempRoot = Join-Path $RepoRoot 'temp'
 $IndexPath = Join-Path $ReleaseRoot 'version-index.json'
 
-if (![string]::Equals($RepoRoot, $ExpectedRoot, [StringComparison]::OrdinalIgnoreCase)) {
-  throw "MyLIST maintenance must run from $ExpectedRoot. Actual root: $RepoRoot"
+if (!(Test-Path -LiteralPath (Join-Path $RepoRoot '.git')) -or !(Test-Path -LiteralPath (Join-Path $ClientRoot 'package.json'))) {
+  throw "The script is not inside a valid MyLIST repository: $RepoRoot"
 }
 
 function Invoke-Checked([string]$Command, [string[]]$Arguments, [string]$WorkingDirectory = $RepoRoot) {

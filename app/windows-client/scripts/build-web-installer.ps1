@@ -1,5 +1,6 @@
-param([string]$ProjectRoot="E:\Codex\Todo_List\app\windows-client",[string]$OutputPath="")
+param([string]$ProjectRoot="",[string]$OutputPath="")
 $ErrorActionPreference='Stop'
+if(!$ProjectRoot){$ProjectRoot=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path}
 $shell=Join-Path $ProjectRoot 'installer-shell'
 $tauriConfig=Get-Content -LiteralPath (Join-Path $ProjectRoot 'src-tauri\tauri.conf.json') -Raw|ConvertFrom-Json
 $version=[string]$tauriConfig.version

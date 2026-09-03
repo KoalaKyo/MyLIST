@@ -7,6 +7,10 @@
 </p>
 
 <p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue.svg" alt="GPL-3.0 license"></a>
+</p>
+
+<p align="center">
   A lightweight, local-first task manager for Windows with multilingual UI, recurring tasks, secure data portability, and optional AI Agent integration.
 </p>
 
@@ -81,6 +85,12 @@ The connection guide is bundled with the application and installer.
 - The MCP service listens locally and can be disabled.
 - Encrypted exports are protected with a user-provided password.
 - MyLIST does not require an online account for normal task management.
+
+## License
+
+MyLIST is free and open-source software licensed under the [GNU General Public License v3.0](LICENSE). You may use, study, share, and modify it. If you distribute a modified version, you must make the corresponding source code available under the same license.
+
+The MyLIST name and logo may not be used to imply endorsement of modified or third-party builds.
 
 ## Development
 

@@ -1,9 +1,12 @@
 param(
-  [string]$InstallerScript = "E:\Codex\Todo_List\app\windows-client\src-tauri\target\release\nsis\x64\installer.nsi",
+  [string]$InstallerScript = "",
   [string]$OutputPath = "",
   [string]$WebUninstallerPath = $env:MYLIST_WEB_UNINSTALLER
 )
 $ErrorActionPreference = 'Stop'
+if ([string]::IsNullOrWhiteSpace($InstallerScript)) {
+  $InstallerScript = Join-Path $PSScriptRoot '..\src-tauri\target\release\nsis\x64\installer.nsi'
+}
 if (!(Test-Path -LiteralPath $InstallerScript)) { throw "Installer script not found: $InstallerScript" }
 $uninstallIcon = Join-Path $PSScriptRoot '..\src-tauri\icons\uninstall.ico'
 if (!(Test-Path -LiteralPath $uninstallIcon)) { throw "Uninstaller icon not found: $uninstallIcon" }
@@ -201,7 +204,7 @@ $text = $text.Insert($unInitIndex, "$systemLanguageFunctions`r`n")
 $text = [regex]::Replace($text, '(?m)^!define MUI_FINISHPAGE_NOAUTOCLOSE\r?\n', '; Installation progress advances automatically to the finish page.`r`n')
 Set-Content -LiteralPath $InstallerScript -Value $text -Encoding UTF8 -NoNewline
 
-$makensis = 'C:\Users\KYO\AppData\Local\tauri\NSIS\makensis.exe'
+$makensis = Join-Path $env:LOCALAPPDATA 'tauri\NSIS\makensis.exe'
 if (!(Test-Path -LiteralPath $makensis)) { throw "makensis not found: $makensis" }
 Push-Location (Split-Path -Parent $InstallerScript)
 try { & $makensis /V2 /NOCD (Split-Path -Leaf $InstallerScript) } finally { Pop-Location }

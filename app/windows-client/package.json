@@ -1,6 +1,7 @@
 {
   "name": "windows-client",
   "private": true,
+  "license": "GPL-3.0-only",
   "version": "1.2.1",
   "type": "module",
   "scripts": {

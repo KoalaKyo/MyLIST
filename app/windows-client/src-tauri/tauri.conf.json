@@ -33,7 +33,8 @@
   "bundle": {
     "active": true,
     "resources": {
-      "resources/docs": "docs"
+      "resources/docs": "docs",
+      "../../../LICENSE": "docs/LICENSE.txt"
     },
     "targets": ["nsis"],
     "windows": {
