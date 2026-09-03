@@ -440,7 +440,7 @@ button:not(:disabled) { transition:background-color 140ms ease,border-color 140m
 .repeat-toggle { display:inline-flex; align-items:center; gap:5px; height:32px; padding:0 9px; border:1px solid var(--border); border-radius:8px; color:var(--text); background:transparent; white-space:nowrap; font-size:12px; }
 .repeat-mark { display:grid; width:14px; height:14px; flex:0 0 14px; place-items:center; border-radius:50%; background:#9ca8b8; }
 .repeat-mark svg { display:block; width:12px; height:12px; }
-.repeat-mark path { fill:none; stroke:#fff; stroke-width:1; stroke-linecap:butt; stroke-linejoin:round; vector-effect:non-scaling-stroke; }
+.repeat-mark path { fill:none; stroke:#fff; stroke-width:1.5; stroke-linecap:butt; stroke-linejoin:round; vector-effect:non-scaling-stroke; }
 .repeat-toggle.enabled .repeat-mark { background:var(--confirm); }
 .repeat-toggle.enabled { border-color:#171a21; }
 .repeat-toggle:disabled { opacity:.48; cursor:not-allowed; }
