@@ -39,6 +39,8 @@ Use only:
 - CleanTemp without ConfirmCleanup is a preview. Use ConfirmCleanup only after disclosing the exact candidates and receiving user approval.
 - Never substitute lower-level Tauri, NSIS, installer-shell, or ad-hoc copy commands for a user-facing artifact.
 - Formal filenames use MyLIST_x.y.z_x64-setup.exe. Do not add final, new, fixed, date, or other suffixes.
+- Test builds are delivered from app\windows-client\artifacts as MyLIST-test.exe.
+- Formal installers are delivered and retained only under releases\major.minor\x.y.z as MyLIST_x.y.z_x64-setup.exe. Do not leave duplicate formal installers in app\windows-client\artifacts.
 
 ## Formal release gate
 
@@ -65,7 +67,7 @@ After maintenance, tell the user:
 - what changed;
 - what was verified and what was not;
 - whether the artifact is a test EXE or formal installer;
-- version, exact filename, size, and SHA-256;
+- version, exact filename, size, SHA-256, and the formal installer path under releases;
 - Git commit and tag for a release;
 - retained versions, removed superseded patches, and archive space;
 - temporary files created and whether they remain;

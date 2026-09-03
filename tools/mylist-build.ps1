@@ -198,6 +198,7 @@ try {
   Write-Output 'RESULT: FORMAL INSTALLER WITH CUSTOM UI'
   Write-Output "Version: $ProductVersion"
   Write-Output "Git commit/tag: $gitCommit / $tag"
+  Remove-Item -LiteralPath $builtInstaller -Force
   Write-Output "Installer: $(Join-Path $destination $installerName)"
   Write-Output ("Installer size: {0:N2} MB" -f ($installer.Length / 1MB))
   Write-Output "SHA-256: $installerHash"
