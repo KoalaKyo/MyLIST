@@ -298,7 +298,7 @@ button:not(:disabled) { transition:background-color 140ms ease,border-color 140m
 .category-settings { display:grid; gap:12px; }
 .category-list { display:grid; gap:4px; }
 .category-row { min-height:36px; display:flex; align-items:center; gap:8px; padding:0 8px 0 4px; border-radius:8px; }
-.category-row:hover { background:var(--surface); }
+.category-row:hover,.category-row:focus-within { background:var(--surface); }
 .category-row.editing { background:var(--surface); padding-right:8px; }
 .category-editor-dot { width:22px; height:22px; background:radial-gradient(circle,var(--category-color) 0 56%,#fff 59%); }
 .category-name { min-width:0; flex:1; color:var(--text); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -307,7 +307,8 @@ button:not(:disabled) { transition:background-color 140ms ease,border-color 140m
 .category-actions { flex:0 0 auto; display:flex; align-items:center; gap:2px; margin-left:auto; }
 .category-action { width:28px; height:28px; border-radius:50%; }
 .category-action img { width:16px; height:16px; }
-.category-delete { position:relative; display:flex; align-items:center; justify-content:center; gap:0; overflow:hidden; color:var(--muted); background:transparent; transition:width 300ms ease,min-width 300ms ease,background-color 300ms ease,color 140ms ease; }
+.category-delete { position:relative; display:flex; align-items:center; justify-content:center; gap:0; overflow:hidden; color:var(--muted); background:transparent; opacity:0; transition:width 300ms ease,min-width 300ms ease,background-color 300ms ease,color 140ms ease,opacity 140ms ease; }
+.category-row:hover .category-delete,.category-row:focus-within .category-delete,.category-row.delete-confirming .category-delete,.category-row.delete-collapsing .category-delete,.category-row.delete-fading .category-delete { opacity:1; }
 .category-delete:hover { color:var(--danger); background:var(--hover); }
 .category-delete img { width:18px; height:18px; flex:0 0 auto; filter:invert(25%) sepia(93%) saturate(2390%) hue-rotate(340deg) brightness(101%) contrast(103%); }
 .category-delete .delete-overlay-icon { display:none; }
@@ -321,9 +322,11 @@ button:not(:disabled) { transition:background-color 140ms ease,border-color 140m
 .category-row.delete-collapsing .category-delete { width:var(--category-delete-width); min-width:var(--category-delete-width); padding:0 12px; color:#fff; background-color:var(--danger); border-radius:999px; gap:6px; animation:category-delete-capsule-collapse 200ms cubic-bezier(.42,0,1,1) both; pointer-events:none; }
 .category-row.delete-collapsing .category-delete img { width:16px; height:16px; filter:brightness(0) invert(1); }
 .category-row.delete-collapsing .category-delete span { max-width:calc(var(--category-delete-width) - 46px); opacity:1; animation:delete-label-collapse 200ms cubic-bezier(.42,0,1,1) both; }
-.category-row.delete-fading .category-delete { width:28px; min-width:28px; height:28px; padding:0; gap:0; color:var(--danger); background:var(--hover); border-radius:50%; opacity:1; pointer-events:none; }
+.category-row.delete-fading .category-delete { width:28px; min-width:28px; height:28px; padding:0; gap:0; color:var(--danger); background:transparent; border-radius:50%; opacity:1; pointer-events:none; }
 .category-row.delete-fading .category-delete::before { content:""; position:absolute; z-index:1; inset:0; border-radius:50%; background:var(--danger); animation:delete-round-shrink 200ms cubic-bezier(0,0,.58,1) both; }
-.category-row.delete-fading .category-delete .delete-base-icon { position:absolute; z-index:0; top:5px; left:5px; display:block; width:18px; height:18px; filter:invert(25%) sepia(93%) saturate(2390%) hue-rotate(340deg) brightness(101%) contrast(103%); }
+.category-row.delete-fading .category-delete .delete-base-icon { position:absolute; z-index:0; top:5px; left:5px; display:block; width:18px; height:18px; opacity:0; filter:invert(25%) sepia(93%) saturate(2390%) hue-rotate(340deg) brightness(101%) contrast(103%); }
+.category-row.delete-fading:hover .category-delete,.category-row.delete-fading:focus-within .category-delete { background:var(--hover); }
+.category-row.delete-fading:hover .category-delete .delete-base-icon,.category-row.delete-fading:focus-within .category-delete .delete-base-icon { opacity:1; }
 .category-row.delete-fading .category-delete .delete-overlay-icon { position:absolute; z-index:2; top:6px; left:6px; display:block; width:16px; height:16px; filter:brightness(0) invert(1); animation:delete-icon-shrink 200ms cubic-bezier(0,0,.58,1) both; }
 .category-row.delete-fading .category-delete span { max-width:0; opacity:0; }
 .category-save { height:28px; min-width:56px; padding:0 10px; }

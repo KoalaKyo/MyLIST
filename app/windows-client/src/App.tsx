@@ -597,7 +597,7 @@ function CategorySettings({ theme, categories, palette, categoryUsage, onCreate,
         const deleteConfirming = deleteConfirmingId === category.id;
         const deleteCollapsing = deleteCollapsingId === category.id;
         const deleteFading = deleteFadingId === category.id;
-        return <div ref={editing ? editingRowRef : undefined} className={`category-row ${editing ? "editing" : ""} ${deleteConfirming ? "delete-confirming" : ""} ${deleteCollapsing ? "delete-collapsing" : ""} ${deleteFading ? "delete-fading" : ""}`} key={category.id} onMouseLeave={() => collapseDeleteConfirmation()} onClick={() => { if (!editing) beginEdit(category); }}>
+        return <div ref={editing ? editingRowRef : undefined} className={`category-row ${editing ? "editing" : ""} ${deleteConfirming ? "delete-confirming" : ""} ${deleteCollapsing ? "delete-collapsing" : ""} ${deleteFading ? "delete-fading" : ""}`} key={category.id} onMouseLeave={(event) => { const focused = document.activeElement; if (focused instanceof HTMLElement && event.currentTarget.contains(focused)) focused.blur(); collapseDeleteConfirmation(); }} onClick={() => { if (!editing) beginEdit(category); }}>
           <ColorPicker theme={theme} palette={palette} selectedId={category.colorId} onSelect={(colorId) => void saveColor(category, colorId)} />
           {editing ? <input className="category-name-input" aria-label={t("settings.categoryName")} autoFocus value={draftName} maxLength={30} onChange={(event) => setDraftName(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void saveEdit(); if (event.key === "Escape") setEditingId(null); }} /> : <span className="category-name">{categoryLabel(category)}</span>}
           <div className="category-actions">
