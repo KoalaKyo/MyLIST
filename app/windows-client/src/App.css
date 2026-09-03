@@ -46,7 +46,7 @@ button:not(:disabled) { transition:background-color 140ms ease,border-color 140m
 .task-row { position:relative; height:40px; display:grid; grid-template-columns:28px minmax(0,1fr) auto; align-items:center; gap:7px; padding:0 6px 0 8px; border-radius:9px; }
 .task-row.status-exiting { overflow:hidden; pointer-events:none; will-change:transform,opacity,height; }
 .task-row.status-exiting-right { animation:task-row-exit-right 600ms cubic-bezier(.12,.92,.22,1) both,task-row-collapse 300ms cubic-bezier(.12,.92,.22,1) 300ms both; }
-.task-row.status-exiting-left { animation:task-row-exit-left 600ms linear both,task-row-collapse 300ms cubic-bezier(.12,.92,.22,1) 300ms both; }
+.task-row.status-exiting-left { animation:task-row-exit-left 600ms cubic-bezier(.12,.92,.22,1) both,task-row-collapse 300ms cubic-bezier(.12,.92,.22,1) 300ms both; }
 .task-row:hover,.task-row:focus-within { background:var(--surface); }
 .task-status { position:relative; z-index:2; justify-self:start; width:20px; min-width:20px; height:20px; padding:0; border:0; border-radius:999px; background:transparent; color:var(--confirm); display:grid; place-items:center; cursor:pointer; overflow:visible; transition:width 300ms ease,min-width 300ms ease,height 300ms ease,transform 300ms ease,background-color 140ms ease,border-color 140ms ease,color 140ms ease; }
 .task-status .category-dot { display:block; transition:opacity 120ms ease; }
@@ -111,9 +111,11 @@ button:not(:disabled) { transition:background-color 140ms ease,border-color 140m
 .delete-collapsing .task-delete img { width:16px; height:16px; filter:brightness(0) invert(1); }
 .delete-collapsing .task-delete span { max-width:calc(var(--delete-confirm-width) - 46px); opacity:1; animation:delete-label-collapse 200ms cubic-bezier(.42,0,1,1) both; }
 .delete-collapsing .task-main { margin-right:0; }
-.delete-fading .task-delete { width:28px; min-width:28px; height:28px; padding:0; gap:0; color:var(--danger); background:var(--hover); border-radius:50%; opacity:1; pointer-events:none; }
+.delete-fading .task-delete { width:28px; min-width:28px; height:28px; padding:0; gap:0; color:var(--danger); background:transparent; border-radius:50%; opacity:1; pointer-events:none; }
 .delete-fading .task-delete::before { content:""; position:absolute; z-index:1; inset:0; border-radius:50%; background:var(--danger); animation:delete-round-shrink 200ms cubic-bezier(0,0,.58,1) both; }
-.delete-fading .task-delete .delete-base-icon { position:absolute; z-index:0; top:5px; left:5px; display:block; width:18px; height:18px; filter:invert(25%) sepia(93%) saturate(2390%) hue-rotate(340deg) brightness(101%) contrast(103%); animation:none; }
+.delete-fading .task-delete .delete-base-icon { position:absolute; z-index:0; top:5px; left:5px; display:block; width:18px; height:18px; opacity:0; filter:invert(25%) sepia(93%) saturate(2390%) hue-rotate(340deg) brightness(101%) contrast(103%); animation:none; }
+.task-row.delete-fading:hover .task-delete,.task-row.delete-fading:focus-within .task-delete { background:var(--hover); }
+.task-row.delete-fading:hover .task-delete .delete-base-icon,.task-row.delete-fading:focus-within .task-delete .delete-base-icon { opacity:1; }
 .delete-fading .task-delete .delete-overlay-icon { position:absolute; z-index:2; top:6px; left:6px; display:block; width:16px; height:16px; filter:brightness(0) invert(1); animation:delete-icon-shrink 200ms cubic-bezier(0,0,.58,1) both; }
 .delete-fading .task-delete span { max-width:0; opacity:0; }
 @keyframes status-capsule-expand { from { width:20px; min-width:20px; height:20px; background:var(--confirm); } to { width:var(--status-confirm-width); min-width:var(--status-confirm-width); height:28px; background:var(--confirm); } }
@@ -136,12 +138,7 @@ button:not(:disabled) { transition:background-color 140ms ease,border-color 140m
 @keyframes status-confirm-text-reveal { from { opacity:0; } 48% { opacity:0; } to { opacity:1; } }
 @keyframes status-confirm-text-hide { from { opacity:1; } 30% { opacity:0; } to { opacity:0; } }
 @keyframes task-row-exit-right { from { transform:translateX(0); opacity:1; } to { transform:translateX(calc(100% + 8px)); opacity:0; } }
-@keyframes task-row-exit-left {
-  0% { transform:translateX(0); opacity:1; }
-  33.333% { transform:translateX(-12px); opacity:1; }
-  66.666% { transform:translateX(-48%); opacity:.72; }
-  100% { transform:translateX(calc(-100% - 8px)); opacity:0; }
-}
+@keyframes task-row-exit-left { from { transform:translateX(0); opacity:1; } to { transform:translateX(calc(-100% - 8px)); opacity:0; } }
 @keyframes task-row-collapse { from { height:40px; } to { height:0; } }
 .task-menu-trigger { color:var(--muted); font-size:9px; font-weight:700; letter-spacing:.45px; background:transparent; }
 .task-menu-trigger:hover,.task-menu-trigger.open { color:var(--text); background:var(--hover); }
