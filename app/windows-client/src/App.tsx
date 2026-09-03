@@ -2,6 +2,7 @@ import { FormEvent, type CSSProperties, type MouseEvent, useEffect, useRef, useS
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { Copy20Regular, WeatherMoon20Regular, WeatherSunny20Regular } from "@fluentui/react-icons";
 import wordmarkLogo from "./assets/mylist-wordmark.svg";
@@ -34,7 +35,6 @@ const icon = (name: string) => `/icons/${name}`;
 // All two-stage confirmation exits use the same cadence: collapse, then shrink away.
 const CONFIRM_TRANSITION_MS = 200;
 const TASK_STATUS_EXIT_MS = 600;
-const PRODUCT_VERSION = "1.1.0";
 
 const defaultCategoryLabelKeys: Record<DefaultCategoryKey, Parameters<typeof t>[0]> = {
   personal: "category.default.personal",
@@ -315,6 +315,10 @@ function Header({ mode, onCycle, onModePress, onHide }: { mode: WindowMode; onCy
 }
 
 function Settings({ section, onSectionChange, theme, locale, interfaceTransparency, startupEnabled, mcpEnabled, mcpStatus, categories, palette, categoryUsage, onThemeChange, onTransparencyChange, onLocaleChange, onStartupChange, onMcpChange, onOpenMcpInstall, onOpenAiGuide, onCreateCategory, onUpdateCategory, onDeleteCategory, onRestoreDefaults, onOpenExport, onPreviewImport, onBack }: { section: SettingsSection; onSectionChange: (section: SettingsSection) => void; theme: Theme; locale: Locale; interfaceTransparency: InterfaceTransparency; startupEnabled: boolean; mcpEnabled: boolean; mcpStatus: McpStatus; categories: Category[]; palette: BootstrapData["palette"]; categoryUsage: Record<string, number>; onThemeChange: (theme: Theme) => void; onTransparencyChange: (value: InterfaceTransparency) => void; onLocaleChange: (locale: Locale) => void; onStartupChange: (enabled: boolean) => void; onMcpChange: (enabled: boolean) => void; onOpenMcpInstall: () => void; onOpenAiGuide: () => void; onCreateCategory: () => void; onUpdateCategory: (input: { id: string; name: string; colorId: string }) => Promise<boolean>; onDeleteCategory: (id: string, targetCategoryId?: string) => Promise<boolean>; onRestoreDefaults: () => Promise<boolean>; onOpenExport: () => void; onPreviewImport: (operation: ImportOperation) => Promise<void>; onBack: () => void }) {
+  const [productVersion, setProductVersion] = useState("");
+  useEffect(() => {
+    void getVersion().then(setProductVersion).catch(() => setProductVersion(""));
+  }, []);
   return <section className="sheet settings-sheet">
     <SheetHeader title={t("app.settings")} onBack={onBack} />
     <nav className="mode-tabs settings-tabs" role="tablist" aria-label={t("settings.tabs")}>
@@ -328,7 +332,7 @@ function Settings({ section, onSectionChange, theme, locale, interfaceTransparen
         <div className="settings-language-row"><span>{t("settings.interfaceTransparency")}</span><TransparencyDropdown value={interfaceTransparency} theme={theme} onChange={onTransparencyChange} /></div>
         <div className="settings-language-row"><span>{t("settings.language")}</span><LanguageDropdown value={locale} theme={theme} onChange={onLocaleChange} /></div>
         <div className="settings-toggle-row"><span>{t("settings.startup")}</span><button type="button" className={`settings-toggle ${startupEnabled ? "enabled" : ""}`} role="switch" aria-checked={startupEnabled} aria-label={t("settings.startup")} onClick={() => onStartupChange(!startupEnabled)}><i /></button></div>
-        <div className="settings-version-row"><span>{t("settings.version")}</span><span className="settings-version-value">V{PRODUCT_VERSION}</span></div>
+        <div className="settings-version-row"><span>{t("settings.version")}</span><span className="settings-version-value">{productVersion ? `V${productVersion}` : "—"}</span></div>
         <div className="settings-divider" role="separator" />
         <DataSettings onOpenExport={onOpenExport} onPreviewImport={onPreviewImport} />
       </div> : section === "categories" ? <CategorySettings theme={theme} categories={categories} palette={palette} categoryUsage={categoryUsage} onCreate={onCreateCategory} onUpdate={onUpdateCategory} onDelete={onDeleteCategory} onRestoreDefaults={onRestoreDefaults} /> : <AiConnectionSettings mcpEnabled={mcpEnabled} mcpStatus={mcpStatus} onMcpChange={onMcpChange} onOpenMcpInstall={onOpenMcpInstall} onOpenAiGuide={onOpenAiGuide} />}

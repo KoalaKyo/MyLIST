@@ -35,6 +35,11 @@ function Get-TomlVersion([string]$Path) {
 }
 
 function Get-ProductVersion {
+  $appSourcePath = Join-Path $ClientRoot 'src\App.tsx'
+  $appSource = Get-Content -LiteralPath $appSourcePath -Raw
+  if ($appSource -match 'PRODUCT_VERSION\s*=\s*["'']\d+\.\d+\.\d+["'']') {
+    throw "Hard-coded UI product version found in $appSourcePath. Read the runtime Tauri version instead."
+  }
   $versions = @(
     [string](Get-Content -LiteralPath (Join-Path $ClientRoot 'package.json') -Raw | ConvertFrom-Json).version
     [string](Get-Content -LiteralPath (Join-Path $ClientRoot 'src-tauri\tauri.conf.json') -Raw | ConvertFrom-Json).version
