@@ -46,7 +46,7 @@ button:not(:disabled) { transition:background-color 140ms ease,border-color 140m
 .task-row { position:relative; height:40px; display:grid; grid-template-columns:28px minmax(0,1fr) auto; align-items:center; gap:7px; padding:0 6px 0 8px; border-radius:9px; }
 .task-row.status-exiting { overflow:hidden; pointer-events:none; will-change:transform,opacity,height; }
 .task-row.status-exiting-right { animation:task-row-exit-right 600ms cubic-bezier(.12,.92,.22,1) both,task-row-collapse 300ms cubic-bezier(.12,.92,.22,1) 300ms both; }
-.task-row.status-exiting-left { animation:task-row-exit-left 600ms cubic-bezier(.12,.92,.22,1) both,task-row-collapse 300ms cubic-bezier(.12,.92,.22,1) 300ms both; }
+.task-row.status-exiting-left { animation:task-row-exit-left 600ms linear both,task-row-collapse 300ms cubic-bezier(.12,.92,.22,1) 300ms both; }
 .task-row:hover,.task-row:focus-within { background:var(--surface); }
 .task-status { position:relative; z-index:2; justify-self:start; width:20px; min-width:20px; height:20px; padding:0; border:0; border-radius:999px; background:transparent; color:var(--confirm); display:grid; place-items:center; cursor:pointer; overflow:visible; transition:width 300ms ease,min-width 300ms ease,height 300ms ease,transform 300ms ease,background-color 140ms ease,border-color 140ms ease,color 140ms ease; }
 .task-status .category-dot { display:block; transition:opacity 120ms ease; }
@@ -107,7 +107,7 @@ button:not(:disabled) { transition:background-color 140ms ease,border-color 140m
 .status-fading .task-status-confirm-icon { opacity:0; }
 .status-fading .task-status-confirm-icon img { filter:brightness(0) invert(1); }
 .status-fading .task-status-confirm-text { opacity:0; }
-.delete-collapsing .task-delete { width:var(--delete-confirm-width); min-width:var(--delete-confirm-width); padding:0 12px; color:#fff; background-color:var(--danger); border-radius:999px; gap:6px; justify-content:flex-start; animation:delete-capsule-collapse 200ms cubic-bezier(.42,0,1,1) both; }
+.delete-collapsing .task-delete { width:var(--delete-confirm-width); min-width:var(--delete-confirm-width); padding:0 12px; color:#fff; background-color:var(--danger); border-radius:999px; gap:6px; justify-content:flex-start; opacity:1; animation:delete-capsule-collapse 200ms cubic-bezier(.42,0,1,1) both; will-change:width,min-width,padding; }
 .delete-collapsing .task-delete img { width:16px; height:16px; filter:brightness(0) invert(1); }
 .delete-collapsing .task-delete span { max-width:calc(var(--delete-confirm-width) - 46px); opacity:1; animation:delete-label-collapse 200ms cubic-bezier(.42,0,1,1) both; }
 .delete-collapsing .task-main { margin-right:0; }
@@ -136,7 +136,12 @@ button:not(:disabled) { transition:background-color 140ms ease,border-color 140m
 @keyframes status-confirm-text-reveal { from { opacity:0; } 48% { opacity:0; } to { opacity:1; } }
 @keyframes status-confirm-text-hide { from { opacity:1; } 30% { opacity:0; } to { opacity:0; } }
 @keyframes task-row-exit-right { from { transform:translateX(0); opacity:1; } to { transform:translateX(calc(100% + 8px)); opacity:0; } }
-@keyframes task-row-exit-left { from { transform:translateX(0); opacity:1; } to { transform:translateX(calc(-100% - 8px)); opacity:0; } }
+@keyframes task-row-exit-left {
+  0% { transform:translateX(0); opacity:1; }
+  33.333% { transform:translateX(-12px); opacity:1; }
+  66.666% { transform:translateX(-48%); opacity:.72; }
+  100% { transform:translateX(calc(-100% - 8px)); opacity:0; }
+}
 @keyframes task-row-collapse { from { height:40px; } to { height:0; } }
 .task-menu-trigger { color:var(--muted); font-size:9px; font-weight:700; letter-spacing:.45px; background:transparent; }
 .task-menu-trigger:hover,.task-menu-trigger.open { color:var(--text); background:var(--hover); }
