@@ -27,12 +27,7 @@ button:not(:disabled) { transition:background-color 140ms ease,border-color 140m
 .icon-control:not(:disabled):active { transform:scale(.94); }
 .icon-control.close:hover img,.task-delete:hover img { filter:invert(25%) sepia(93%) saturate(2390%) hue-rotate(340deg) brightness(101%) contrast(103%); }
 .icon-control:disabled { opacity:.45; cursor:not-allowed; }
-.pin-desktop img { transform:rotate(45deg); }
-.pin-topmost { position:relative; }
-.pin-topmost img { width:18px; transform:rotate(-45deg); }
-.pin-topmost::after { content:""; position:absolute; left:50%; bottom:7px; width:16px; height:1.5px; border-radius:2px; background:var(--pin-line-color,currentColor); transform:translateX(-50%); }
-.pin-topmost:hover { --pin-line-color:#212121; }
-.app-shell[data-theme="dark"] .pin-topmost:hover { --pin-line-color:#2f7cf6; }
+.pin img { width:22px; height:22px; }
 .task-page { grid-row:2; min-height:0; overflow:hidden; display:grid; grid-template-rows:60px minmax(0,1fr); background:var(--content-bg); }
 .mode-tabs { height:44px; display:grid; grid-template-columns:repeat(2,1fr); gap:3px; margin:8px; padding:3px; border-radius:10px; background:var(--surface); }
 .mode-tabs button { min-height:30px; border:0; border-radius:8px; background:transparent; color:var(--muted); cursor:pointer; font-size:13px; font-weight:650; }
