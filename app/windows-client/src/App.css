@@ -27,7 +27,7 @@ button:not(:disabled) { transition:background-color 140ms ease,border-color 140m
 .icon-control:not(:disabled):active { transform:scale(.94); }
 .icon-control.close:hover img,.task-delete:hover img { filter:invert(25%) sepia(93%) saturate(2390%) hue-rotate(340deg) brightness(101%) contrast(103%); }
 .icon-control:disabled { opacity:.45; cursor:not-allowed; }
-.pin img { width:22px; height:22px; }
+.pin img { width:20px; height:20px; }
 .task-page { grid-row:2; min-height:0; overflow:hidden; display:grid; grid-template-rows:60px minmax(0,1fr); background:var(--content-bg); }
 .mode-tabs { height:44px; display:grid; grid-template-columns:repeat(2,1fr); gap:3px; margin:8px; padding:3px; border-radius:10px; background:var(--surface); }
 .mode-tabs button { min-height:30px; border:0; border-radius:8px; background:transparent; color:var(--muted); cursor:pointer; font-size:13px; font-weight:650; }
@@ -229,7 +229,7 @@ button:not(:disabled) { transition:background-color 140ms ease,border-color 140m
 .text-context-menu[data-theme="dark"] button:disabled { color:#708198; }
 .theme-mode-toggle { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:3px; width:78px; height:32px; padding:3px; border-radius:8px; background:var(--surface); }
 .theme-mode-toggle button { min-width:0; padding:0; border:0; border-radius:5px; color:var(--muted); background:transparent; display:grid; place-items:center; cursor:pointer; transition:color 140ms ease,background-color 140ms ease; }
-.theme-mode-toggle button svg { width:18px; height:18px; stroke-width:1.5; }
+.theme-mode-toggle button img { width:18px; height:18px; }
 .theme-mode-toggle button:hover { color:var(--text); }
 .theme-mode-toggle button.selected { color:var(--text); background:var(--bg); box-shadow:0 1px 2px rgba(0,0,0,.08); }
 .app-shell[data-theme="dark"] .theme-mode-toggle button.selected { color:#fff; background:var(--bg); box-shadow:none; }
@@ -553,7 +553,7 @@ button:not(:disabled) { transition:background-color 140ms ease,border-color 140m
 .field-copy { position:absolute; top:50%; right:6px; width:28px; height:28px; padding:0; border:0; border-radius:50%; color:var(--muted); background:transparent; transform:translateY(-50%); display:grid; place-items:center; cursor:pointer; }
 .field-copy:hover { color:var(--text); background:var(--hover); }
 .field-copy:active { transform:translateY(-50%) scale(.94); }
-.field-copy svg { width:18px; height:18px; stroke-width:1.5; }
+.field-copy img { width:18px; height:18px; opacity:.78; }
 .note-wrap .field-copy { top:auto; bottom:6px; transform:none; }
 .note-wrap .field-copy:active { transform:scale(.94); }
 .category-value { display:flex; align-items:center; gap:8px; }

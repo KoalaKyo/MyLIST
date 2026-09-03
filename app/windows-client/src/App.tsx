@@ -4,7 +4,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { Copy20Regular, WeatherMoon20Regular, WeatherSunny20Regular } from "@fluentui/react-icons";
 import wordmarkLogo from "./assets/mylist-wordmark.svg";
 import { applyExternalMessages, formatDateTime, formatMonth, localeOptions, setActiveLocale, t, type Locale } from "./i18n";
 import "./App.css";
@@ -612,8 +611,8 @@ function RestoreDefaultCategoriesDialog({ theme, onCancel, onRestore }: { theme:
 
 function ThemeModeToggle({ value, onChange }: { value: Theme; onChange: (theme: Theme) => void }) {
   return <div className="theme-mode-toggle" role="group" aria-label={t("settings.appearance")}>
-    <button type="button" className={value === "light" ? "selected" : ""} aria-label={t("settings.themeLight")} aria-pressed={value === "light"} onClick={() => onChange("light")}><WeatherSunny20Regular /></button>
-    <button type="button" className={value === "dark" ? "selected" : ""} aria-label={t("settings.themeDark")} aria-pressed={value === "dark"} onClick={() => onChange("dark")}><WeatherMoon20Regular /></button>
+    <button type="button" className={value === "light" ? "selected" : ""} aria-label={t("settings.themeLight")} aria-pressed={value === "light"} onClick={() => onChange("light")}><img src={icon("weather_sunny_20_regular.svg")} alt="" /></button>
+    <button type="button" className={value === "dark" ? "selected" : ""} aria-label={t("settings.themeDark")} aria-pressed={value === "dark"} onClick={() => onChange("dark")}><img src={icon("weather_moon_20_regular.svg")} alt="" /></button>
   </div>;
 }
 
@@ -1092,7 +1091,7 @@ function McpDestructiveConfirmationDialog({ theme, confirmation, onApprove, onRe
 }
 
 function FieldCopyButton({ label, onCopy }: { label: string; onCopy: () => void }) {
-  return <button type="button" className="field-copy" aria-label={label} onClick={onCopy}><Copy20Regular /></button>;
+  return <button type="button" className="field-copy" aria-label={label} onClick={onCopy}><img src={icon("copy_20_regular.svg")} alt="" /></button>;
 }
 
 function TaskView({ task, onBack, onEdit, onDelete, onCopy }: { task: Task; onBack: () => void; onEdit: () => void; onDelete: () => void; onCopy: (text: string, successNotice: string) => void }) {

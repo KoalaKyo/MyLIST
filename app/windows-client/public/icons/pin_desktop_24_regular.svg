@@ -1,4 +1,3 @@
 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <path d="M4.5 20.25H19.5" stroke="#212121" stroke-width="1.7" stroke-linecap="round"/>
-  <path d="M12 20.25V15.75M8.25 14.75H15.75M9.25 14.75V9.5L7.75 7H16.25L14.75 9.5V14.75" stroke="#212121" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+  <g stroke="#212121" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"><path d="M4.5 20.25H19.5"/><path d="M12 20.25V15.75M8.25 14.75H15.75M9.25 14.75V9.5L7.75 7H16.25L14.75 9.5V14.75"/></g>
 </svg>
