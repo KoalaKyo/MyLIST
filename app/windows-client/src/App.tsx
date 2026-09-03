@@ -18,7 +18,6 @@ type Category = { id: string; name: string; defaultKey: DefaultCategoryKey | nul
 type BootstrapData = { deviceId: string; theme: Theme; locale: Locale; startupEnabled: boolean; mcpEnabled: boolean; interfaceTransparency: InterfaceTransparency; categories: Category[]; palette: Array<{ id: string; row: number; column: number; value: string }> };
 type McpServiceSnapshot = { status: McpStatus; endpoint: string | null; aiConnected: boolean };
 type Task = { id: string; title: string; note: string; categoryId: string; categoryName: string; categoryDefaultKey: DefaultCategoryKey | null; categoryNameOverride: string | null; categoryColor: string; status: Status; dueAtUtcMs: number | null; recurrenceJson: string | null; createdAtUtcMs: number; updatedAtUtcMs: number; completedAtUtcMs: number | null };
-type VisualTaskExit = { key: string; task: Task; source: Status; index: number };
 type McpDestructiveConfirmation = { token: string; operation: "delete_task" | "delete_category"; expiresAtUtcMs: number; preview: { task?: Task; category?: Category; taskCount?: number; targetCategoryId?: string | null } };
 type McpTransferRequest = { operationId: string; operation: "export_plaintext" | "export_encrypted" | "import_merge" | "import_replace" };
 type ImportPreview = { sessionId: string; sourceFileName: string; sourceDeviceId: string; exportedAtUtcMs: number; taskCount: number; categoryCount: number; paletteCount: number; newTasks: number; updatedTasks: number; keptTasks: number; newCategories: number; updatedCategories: number; keptCategories: number };
@@ -113,7 +112,6 @@ export default function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);
   const [mcpStatus, setMcpStatus] = useState<McpStatus>("disabled");
   const [tasks, setTasks] = useState<Record<Status, Task[]>>({ todo: [], completed: [] });
-  const [visualTaskExits, setVisualTaskExits] = useState<VisualTaskExit[]>([]);
   const [status, setStatus] = useState<Status>("todo");
   const [page, setPage] = useState<Page>("home");
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
@@ -127,15 +125,9 @@ export default function App() {
   const [mcpConfirmation, setMcpConfirmation] = useState<McpDestructiveConfirmation | null>(null);
   const [mcpTransfer, setMcpTransfer] = useState<McpTransferRequest | null>(null);
   const noticeTimerRef = useRef<number | null>(null);
-  const visualExitSequenceRef = useRef(0);
-  const visualExitTimersRef = useRef<Map<string, number>>(new Map());
 
   const categories = bootstrap?.categories ?? [];
   const visibleTasks = tasks[status];
-  const renderedTasks: Array<{ task: Task; visualExit?: VisualTaskExit }> = visibleTasks.map((task) => ({ task }));
-  visualTaskExits.filter((exit) => exit.source === status).sort((a, b) => a.index - b.index).forEach((visualExit) => {
-    renderedTasks.splice(Math.min(visualExit.index, renderedTasks.length), 0, { task: visualExit.task, visualExit });
-  });
   const formMode = page === "edit" ? t("task.edit") : t("task.add");
 
   function currentNativeLabels() {
@@ -216,11 +208,7 @@ export default function App() {
     } catch (error) { showError(error); }
   }
 
-  useEffect(() => () => {
-    if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current);
-    visualExitTimersRef.current.forEach((timer) => window.clearTimeout(timer));
-    visualExitTimersRef.current.clear();
-  }, []);
+  useEffect(() => () => { if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current); }, []);
   function showNotice(message: string) { if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current); setNotice(message); noticeTimerRef.current = window.setTimeout(() => { setNotice(""); noticeTimerRef.current = null; }, 3000); }
   function showError(error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
@@ -290,64 +278,8 @@ export default function App() {
   async function cancelMcpTransfer() { const active = mcpTransfer; setMcpTransfer(null); setImportPreview(null); setEncryptedImport(null); setExportDialogOpen(false); if (active) { try { await invoke("cancel_mcp_transfer", { operationId: active.operationId }); } catch { /* The client may have already completed or expired the operation. */ } } }
   async function exportMcpData(password?: string) { const active = mcpTransfer; if (!active) return false; try { await invoke("mcp_export_snapshot", { operationId: active.operationId, password: password ?? null }); setMcpTransfer(null); showNotice(password ? t("notice.exportedEncrypted") : t("notice.exported")); return true; } catch (error) { showError(error); return false; } }
   const cycleMode = () => void setWindowMode(mode === "mode-normal" ? "mode-topmost" : mode === "mode-topmost" ? "mode-desktop" : "mode-normal");
-  function finishVisualTaskExit(key: string) {
-    const timer = visualExitTimersRef.current.get(key);
-    if (timer) window.clearTimeout(timer);
-    visualExitTimersRef.current.delete(key);
-    setVisualTaskExits((current) => current.filter((exit) => exit.key !== key));
-  }
-  function switchTaskTab(next: Status) {
-    if (next !== status) {
-      visualExitTimersRef.current.forEach((timer) => window.clearTimeout(timer));
-      visualExitTimersRef.current.clear();
-      setVisualTaskExits([]);
-    }
-    setStatus(next);
-  }
-  function retainTaskForOriginalExit(task: Task, duration: number) {
-    const key = `${task.id}:${++visualExitSequenceRef.current}`;
-    const index = Math.max(0, tasks[task.status].findIndex((item) => item.id === task.id));
-    setVisualTaskExits((current) => [...current.filter((exit) => exit.task.id !== task.id), { key, task, source: task.status, index }]);
-    const timer = window.setTimeout(() => finishVisualTaskExit(key), duration);
-    visualExitTimersRef.current.set(key, timer);
-    return key;
-  }
-  async function setTaskStatus(task: Task, next: Status): Promise<boolean> {
-    const visualExitKey = retainTaskForOriginalExit(task, TASK_STATUS_EXIT_MS);
-    const movedTask: Task = { ...task, status: next, completedAtUtcMs: next === "completed" ? Date.now() : null, updatedAtUtcMs: Date.now() };
-    setTasks((current) => ({
-      ...current,
-      [task.status]: current[task.status].filter((item) => item.id !== task.id),
-      [next]: [movedTask, ...current[next].filter((item) => item.id !== task.id)],
-    }));
-    showNotice(next === "completed" ? t("notice.taskCompleted") : t("notice.taskMoved"));
-    try {
-      await invoke<Task>("set_task_status", { id: task.id, status: next });
-      await refreshTasks();
-      return true;
-    } catch (error) {
-      finishVisualTaskExit(visualExitKey);
-      await refreshTasks();
-      showError(error);
-      return false;
-    }
-  }
-  async function removeTask(task: Task, animate = false): Promise<boolean> {
-    const visualExitKey = animate ? retainTaskForOriginalExit(task, CONFIRM_TRANSITION_MS * 2) : null;
-    setTasks((current) => ({ ...current, [task.status]: current[task.status].filter((item) => item.id !== task.id) }));
-    setPage("home");
-    showNotice(t("notice.taskDeleted"));
-    try {
-      await invoke("delete_task", { id: task.id });
-      await refreshTasks();
-      return true;
-    } catch (error) {
-      if (visualExitKey) finishVisualTaskExit(visualExitKey);
-      await refreshTasks();
-      showError(error);
-      return false;
-    }
-  }
+  async function setTaskStatus(task: Task, next: Status): Promise<boolean> { try { await invoke<Task>("set_task_status", { id: task.id, status: next }); await refreshTasks(); setPage("home"); showNotice(next === "completed" ? t("notice.taskCompleted") : t("notice.taskMoved")); return true; } catch (error) { showError(error); return false; } }
+  async function removeTask(task: Task) { try { await invoke("delete_task", { id: task.id }); await refreshTasks(); setPage("home"); showNotice(t("notice.taskDeleted")); } catch (error) { showError(error); } }
   async function approveMcpConfirmation(token: string) { try { await invoke("approve_mcp_confirmation", { token }); setMcpConfirmation(null); } catch (error) { showError(error); } }
   async function rejectMcpConfirmation(token: string) { try { await invoke("reject_mcp_confirmation", { token }); } catch (error) { showError(error); } finally { setMcpConfirmation(null); } }
   function openTask(task: Task) { setSelectedTask(task); setPage("view"); }
@@ -357,12 +289,12 @@ export default function App() {
     <Header mode={mode} onCycle={cycleMode} onModePress={() => void invoke("refresh_window_surface")} onHide={() => void invoke("hide_to_tray")} />
       <section className="task-page">
         <div className="mode-tabs task-tabs" role="tablist" aria-label={t("task.status")}>
-          <button className={status === "todo" ? "selected" : ""} onClick={() => switchTaskTab("todo")}><span className="tab-count">{tasks.todo.length}</span>{t("task.todo")}</button>
-          <button className={status === "completed" ? "selected" : ""} onClick={() => switchTaskTab("completed")}><span className="tab-count">{tasks.completed.length}</span>{t("task.completed")}</button>
+          <button className={status === "todo" ? "selected" : ""} onClick={() => setStatus("todo")}><span className="tab-count">{tasks.todo.length}</span>{t("task.todo")}</button>
+          <button className={status === "completed" ? "selected" : ""} onClick={() => setStatus("completed")}><span className="tab-count">{tasks.completed.length}</span>{t("task.completed")}</button>
         </div>
         <TaskList>
-          {renderedTasks.map(({ task }) => <TaskRow key={`${status}:${task.id}`} task={task} theme={theme} onOpen={() => openTask(task)} onEdit={() => { setSelectedTask(task); setPage("edit"); }} onCopy={() => void copyText(task.note ? `${task.title}\n${task.note}` : task.title, task.note ? t("notice.copiedTitleAndNote") : t("notice.copiedTitle"))} onStatus={() => setTaskStatus(task, task.status === "todo" ? "completed" : "todo")} onDelete={() => task.status === "todo" ? setTodoDeleteConfirmation(task) : void removeTask(task, true)} />)}
-          {!renderedTasks.length && <div className="empty-state"><span className="empty-state-icon" aria-hidden="true" /><p>{status === "todo" ? t("task.emptyTodo") : t("task.emptyCompleted")}</p><span>{status === "todo" ? t("task.emptyTodoHelp") : t("task.emptyCompletedHelp")}</span></div>}
+          {visibleTasks.map((task) => <TaskRow key={task.id} task={task} theme={theme} onOpen={() => openTask(task)} onEdit={() => { setSelectedTask(task); setPage("edit"); }} onCopy={() => void copyText(task.note ? `${task.title}\n${task.note}` : task.title, task.note ? t("notice.copiedTitleAndNote") : t("notice.copiedTitle"))} onStatus={() => setTaskStatus(task, task.status === "todo" ? "completed" : "todo")} onDelete={() => task.status === "todo" ? setTodoDeleteConfirmation(task) : void removeTask(task)} />)}
+          {!visibleTasks.length && <div className="empty-state"><span className="empty-state-icon" aria-hidden="true" /><p>{status === "todo" ? t("task.emptyTodo") : t("task.emptyCompleted")}</p><span>{status === "todo" ? t("task.emptyTodoHelp") : t("task.emptyCompletedHelp")}</span></div>}
         </TaskList>
       </section>
       <footer className="app-footer"><button className="icon-control" aria-label={t("app.settings")} onClick={() => setPage("settings")}><img src={icon("settings_24_regular.svg")} alt="" /></button><button className="add-control" aria-label={t("task.add")} onClick={() => { setSelectedTask(null); setPage("create"); }}><img src={icon("add_24_regular.svg")} alt="" /></button><button className="resize-grip" aria-label={t("app.resize")} onMouseDown={startResize}><span>{Array.from({ length: 6 }, (_, index) => <i key={index} />)}</span></button></footer>
@@ -371,7 +303,7 @@ export default function App() {
     {importPreview && <ImportPreviewDialog preview={importPreview} operation={importOperation} theme={theme} onApply={applyPlaintextImport} onClose={() => { if (mcpTransfer?.operationId === importPreview.sessionId) void cancelMcpTransfer(); else setImportPreview(null); }} />}
     {encryptedImport && <EncryptedImportPasswordDialog theme={theme} request={encryptedImport} onClose={() => { if (mcpTransfer?.operationId === encryptedImport.sessionId) void cancelMcpTransfer(); else setEncryptedImport(null); }} onPreview={previewEncryptedImport} />}
     {exportDialogOpen && <ExportDataDialog theme={theme} lockedEncrypted={mcpTransfer ? mcpTransfer.operation === "export_encrypted" : undefined} onClose={() => { if (mcpTransfer) void cancelMcpTransfer(); else setExportDialogOpen(false); }} onExportPlaintext={mcpTransfer ? () => exportMcpData() : exportPlaintextData} onExportEncrypted={mcpTransfer ? exportMcpData : exportEncryptedData} />}
-    {todoDeleteConfirmation && <TodoTaskDeleteDialog theme={theme} task={todoDeleteConfirmation} onCancel={() => setTodoDeleteConfirmation(null)} onConfirm={async () => { const task = todoDeleteConfirmation; if (!task) return false; setTodoDeleteConfirmation(null); void removeTask(task); return true; }} />}
+    {todoDeleteConfirmation && <TodoTaskDeleteDialog theme={theme} task={todoDeleteConfirmation} onCancel={() => setTodoDeleteConfirmation(null)} onConfirm={async () => { const task = todoDeleteConfirmation; if (!task) return false; try { await invoke("delete_task", { id: task.id }); await refreshTasks(); setTodoDeleteConfirmation(null); showNotice(t("notice.taskDeleted")); return true; } catch (error) { showError(error); return false; } }} />}
     {mcpConfirmation && <McpDestructiveConfirmationDialog theme={theme} confirmation={mcpConfirmation} onApprove={approveMcpConfirmation} onReject={rejectMcpConfirmation} />}
     <TextContextMenu theme={theme} />
   </main>;
@@ -878,9 +810,11 @@ function TaskRow({ task, theme, onOpen, onEdit, onCopy, onStatus, onDelete }: { 
       setCollapsing(null);
       setStatusExiting(true);
       if (timerRef.current) window.clearTimeout(timerRef.current);
-      void onStatus().then((changed) => {
-        if (!changed) { setStatusExiting(false); setTransitionLocked(false); }
-      });
+      timerRef.current = window.setTimeout(() => {
+        void onStatus().then((changed) => {
+          if (!changed) { setStatusExiting(false); setTransitionLocked(false); }
+        });
+      }, TASK_STATUS_EXIT_MS);
       return;
     }
     if (confirming === "delete") { switchConfirmation("status"); return; }
@@ -888,7 +822,7 @@ function TaskRow({ task, theme, onOpen, onEdit, onCopy, onStatus, onDelete }: { 
   }
   function handleDelete() {
     if (transitionLocked) return;
-    if (confirming === "delete") { onDelete(); collapseConfirmation(); return; }
+    if (confirming === "delete") { onDelete(); return; }
     if (confirming === "status") { switchConfirmation("delete"); return; }
     lockTransition("delete");
   }
