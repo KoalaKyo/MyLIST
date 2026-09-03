@@ -45,7 +45,7 @@ const DEFAULT_CATEGORIES: [(&str, &str, usize); 8] = [
     ("travel", "出行", 4),
     ("finance", "财务", 5),
     ("study", "学习", 1),
-    ("other", "其他", 7),
+    ("other", "其他", 3),
 ];
 
 #[derive(Debug)]
@@ -1565,6 +1565,7 @@ fn initialize_database(connection: &mut Connection) -> Result<(), DataError> {
     migrate_localized_default_categories_v6(&transaction, now, &device_id)?;
     migrate_other_default_color_v7(&transaction, now, &device_id)?;
     migrate_task_recurrence_v8(&transaction, now)?;
+    migrate_other_default_color_v9(&transaction, now, &device_id)?;
     transaction.execute(
         "INSERT OR IGNORE INTO schema_migrations (version, applied_at_utc_ms) VALUES (1, ?1)",
         params![now],
@@ -1672,6 +1673,37 @@ fn migrate_other_default_color_v7(
     )?;
     transaction.execute(
         "INSERT INTO schema_migrations (version, applied_at_utc_ms) VALUES (7, ?1)",
+        params![now],
+    )?;
+    Ok(())
+}
+
+/// Moves the untouched default “Other” category from pink to coral so it no
+/// longer duplicates “Personal”. Renamed or recolored categories are preserved.
+fn migrate_other_default_color_v9(
+    transaction: &rusqlite::Transaction<'_>,
+    now: i64,
+    device_id: &str,
+) -> Result<(), DataError> {
+    let applied = transaction
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE version = 9",
+            [],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if applied.is_some() {
+        return Ok(());
+    }
+    transaction.execute(
+        "UPDATE categories SET color_id = ?1, updated_at_utc_ms = ?2,
+         revision = revision + 1, updated_by_device_id = ?3
+         WHERE default_key = 'other' AND name_override IS NULL AND color_id = ?4
+         AND deleted_at_utc_ms IS NULL",
+        params![palette_id(1, 3), now, device_id, palette_id(1, 7)],
+    )?;
+    transaction.execute(
+        "INSERT INTO schema_migrations (version, applied_at_utc_ms) VALUES (9, ?1)",
         params![now],
     )?;
     Ok(())
@@ -2802,7 +2834,7 @@ mod tests {
             bootstrap.categories[7].default_key.as_deref(),
             Some("other")
         );
-        assert_eq!(bootstrap.categories[7].color, "#FF93C6");
+        assert_eq!(bootstrap.categories[7].color, "#FF9390");
     }
     #[test]
     fn theme_setting_is_validated_and_persisted() {

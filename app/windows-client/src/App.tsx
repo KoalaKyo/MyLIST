@@ -535,7 +535,12 @@ function CategorySettings({ theme, categories, palette, categoryUsage, onCreate,
   async function saveEdit() {
     if (!editingId) return;
     const category = categories.find((item) => item.id === editingId);
-    if (category && await onUpdate({ id: editingId, name: draftName, colorId: category.colorId })) setEditingId(null);
+    if (!category) return;
+    if (draftName === categoryLabel(category)) {
+      setEditingId(null);
+      return;
+    }
+    if (await onUpdate({ id: editingId, name: draftName, colorId: category.colorId })) setEditingId(null);
   }
   async function saveColor(category: Category, colorId: string) {
     setEditingId(null);
