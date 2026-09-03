@@ -41,6 +41,7 @@ Use only:
 - Formal filenames use MyLIST_x.y.z_x64-setup.exe. Do not add final, new, fixed, date, or other suffixes.
 - Test builds are delivered from app\windows-client\artifacts as MyLIST-test.exe.
 - Formal installers are delivered and retained only under releases\major.minor\x.y.z as MyLIST_x.y.z_x64-setup.exe. Do not leave duplicate formal installers in app\windows-client\artifacts.
+- Keep the generated source ZIP in the local release archive for rollback, but never upload that custom source ZIP as a GitHub Release asset. GitHub's automatic source-code links are platform-managed and remain visible.
 
 ## Formal release gate
 
