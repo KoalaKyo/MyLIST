@@ -5015,7 +5015,7 @@ dependencies = [
 
 [[package]]
 name = "windows-client"
-version = "1.2.0"
+version = "1.2.1"
 dependencies = [
  "aes-gcm",
  "argon2",
