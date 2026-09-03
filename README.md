@@ -20,6 +20,14 @@ MyLIST keeps everyday tasks close at hand without turning them into a complex pr
 
 Task data is stored locally. AI connectivity is optional and uses a local MCP service that can be enabled or disabled from the app.
 
+> I spent a long time looking for a desktop to-do list that was minimal, polished, free, and ad-free. I could not find one, so I built it myself.
+
+### A focused desktop task list
+
+<p align="center">
+  <img src="design/product-screenshots/main-window-1.png" alt="MyLIST main window" width="420">
+</p>
+
 ## Highlights
 
 - Fast task capture, editing, completion, restoration, and deletion
@@ -32,6 +40,24 @@ Task data is stored locally. AI connectivity is optional and uses a local MCP se
 - Optional local MCP integration for AI Agents such as Codex
 - Simplified Chinese, Traditional Chinese, English, German, French, Italian, Spanish, and Japanese
 - Custom multilingual installer and uninstaller
+
+## Create tasks without friction
+
+Add a task with only a title, or include notes, a category, a due date, and a recurrence rule when you need more structure.
+
+<p align="center">
+  <img src="design/product-screenshots/add-task-1.png" alt="Create a task in MyLIST" width="420">
+</p>
+
+## Make MyLIST yours
+
+Adjust appearance and transparency, organize tasks with color-coded categories, choose from eight interface languages, and connect an AI Agent through the optional local MCP service.
+
+<p align="center">
+  <img src="design/product-screenshots/settings-1.png" alt="MyLIST general settings" width="31%">
+  <img src="design/product-screenshots/settings-2.png" alt="MyLIST category settings" width="31%">
+  <img src="design/product-screenshots/settings-3.png" alt="MyLIST AI connection settings" width="31%">
+</p>
 
 ## Download
 
