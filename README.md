@@ -61,7 +61,7 @@ Adjust appearance and transparency, organize tasks with color-coded categories, 
 
 ## Download
 
-Download the signed or checksum-verified installer from the [latest GitHub Release](https://github.com/KoalaKyo/MyLIST/releases/latest).
+Download the installer from the [latest GitHub Release](https://github.com/KoalaKyo/MyLIST/releases/latest), then verify its SHA-256 checksum with the attached `SHA256.txt` file.
 
 The formal Windows package is named:
 
