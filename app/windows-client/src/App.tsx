@@ -18,6 +18,7 @@ type Category = { id: string; name: string; defaultKey: DefaultCategoryKey | nul
 type BootstrapData = { deviceId: string; theme: Theme; locale: Locale; startupEnabled: boolean; mcpEnabled: boolean; interfaceTransparency: InterfaceTransparency; categories: Category[]; palette: Array<{ id: string; row: number; column: number; value: string }> };
 type McpServiceSnapshot = { status: McpStatus; endpoint: string | null; aiConnected: boolean };
 type Task = { id: string; title: string; note: string; categoryId: string; categoryName: string; categoryDefaultKey: DefaultCategoryKey | null; categoryNameOverride: string | null; categoryColor: string; status: Status; dueAtUtcMs: number | null; recurrenceJson: string | null; createdAtUtcMs: number; updatedAtUtcMs: number; completedAtUtcMs: number | null };
+type TaskDeparture = { key: string; task: Task; source: Status; index: number; kind: "status" | "delete" };
 type McpDestructiveConfirmation = { token: string; operation: "delete_task" | "delete_category"; expiresAtUtcMs: number; preview: { task?: Task; category?: Category; taskCount?: number; targetCategoryId?: string | null } };
 type McpTransferRequest = { operationId: string; operation: "export_plaintext" | "export_encrypted" | "import_merge" | "import_replace" };
 type ImportPreview = { sessionId: string; sourceFileName: string; sourceDeviceId: string; exportedAtUtcMs: number; taskCount: number; categoryCount: number; paletteCount: number; newTasks: number; updatedTasks: number; keptTasks: number; newCategories: number; updatedCategories: number; keptCategories: number };
@@ -33,6 +34,7 @@ type TextContextMenuState = { control: TextControl; x: number; y: number; hasSel
 const icon = (name: string) => `/icons/${name}`;
 // All two-stage confirmation exits use the same cadence: collapse, then shrink away.
 const CONFIRM_TRANSITION_MS = 200;
+const TASK_DEPARTURE_MS = 600;
 
 const defaultCategoryLabelKeys: Record<DefaultCategoryKey, Parameters<typeof t>[0]> = {
   personal: "category.default.personal",
@@ -111,6 +113,7 @@ export default function App() {
   const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);
   const [mcpStatus, setMcpStatus] = useState<McpStatus>("disabled");
   const [tasks, setTasks] = useState<Record<Status, Task[]>>({ todo: [], completed: [] });
+  const [taskDepartures, setTaskDepartures] = useState<TaskDeparture[]>([]);
   const [status, setStatus] = useState<Status>("todo");
   const [page, setPage] = useState<Page>("home");
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
@@ -124,9 +127,15 @@ export default function App() {
   const [mcpConfirmation, setMcpConfirmation] = useState<McpDestructiveConfirmation | null>(null);
   const [mcpTransfer, setMcpTransfer] = useState<McpTransferRequest | null>(null);
   const noticeTimerRef = useRef<number | null>(null);
+  const departureSequenceRef = useRef(0);
+  const departureTimersRef = useRef<Map<string, number>>(new Map());
 
   const categories = bootstrap?.categories ?? [];
   const visibleTasks = tasks[status];
+  const renderedTasks: Array<{ task: Task; departure?: TaskDeparture }> = visibleTasks.map((task) => ({ task }));
+  taskDepartures.filter((departure) => departure.source === status).sort((a, b) => a.index - b.index).forEach((departure) => {
+    renderedTasks.splice(Math.min(departure.index, renderedTasks.length), 0, { task: departure.task, departure });
+  });
   const formMode = page === "edit" ? t("task.edit") : t("task.add");
 
   function currentNativeLabels() {
@@ -207,7 +216,11 @@ export default function App() {
     } catch (error) { showError(error); }
   }
 
-  useEffect(() => () => { if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current); }, []);
+  useEffect(() => () => {
+    if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current);
+    departureTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    departureTimersRef.current.clear();
+  }, []);
   function showNotice(message: string) { if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current); setNotice(message); noticeTimerRef.current = window.setTimeout(() => { setNotice(""); noticeTimerRef.current = null; }, 3000); }
   function showError(error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
@@ -277,7 +290,22 @@ export default function App() {
   async function cancelMcpTransfer() { const active = mcpTransfer; setMcpTransfer(null); setImportPreview(null); setEncryptedImport(null); setExportDialogOpen(false); if (active) { try { await invoke("cancel_mcp_transfer", { operationId: active.operationId }); } catch { /* The client may have already completed or expired the operation. */ } } }
   async function exportMcpData(password?: string) { const active = mcpTransfer; if (!active) return false; try { await invoke("mcp_export_snapshot", { operationId: active.operationId, password: password ?? null }); setMcpTransfer(null); showNotice(password ? t("notice.exportedEncrypted") : t("notice.exported")); return true; } catch (error) { showError(error); return false; } }
   const cycleMode = () => void setWindowMode(mode === "mode-normal" ? "mode-topmost" : mode === "mode-topmost" ? "mode-desktop" : "mode-normal");
+  function finishTaskDeparture(key: string) {
+    const timer = departureTimersRef.current.get(key);
+    if (timer) window.clearTimeout(timer);
+    departureTimersRef.current.delete(key);
+    setTaskDepartures((current) => current.filter((departure) => departure.key !== key));
+  }
+  function beginTaskDeparture(task: Task, kind: TaskDeparture["kind"]) {
+    const key = `${task.id}:${++departureSequenceRef.current}`;
+    const index = Math.max(0, tasks[task.status].findIndex((item) => item.id === task.id));
+    setTaskDepartures((current) => [...current.filter((departure) => departure.task.id !== task.id), { key, task, source: task.status, index, kind }]);
+    const timer = window.setTimeout(() => finishTaskDeparture(key), TASK_DEPARTURE_MS);
+    departureTimersRef.current.set(key, timer);
+    return key;
+  }
   async function setTaskStatus(task: Task, next: Status): Promise<boolean> {
+    const departureKey = beginTaskDeparture(task, "status");
     const movedTask = { ...task, status: next, completedAtUtcMs: next === "completed" ? Date.now() : null, updatedAtUtcMs: Date.now() };
     setTasks((current) => ({
       ...current,
@@ -291,12 +319,14 @@ export default function App() {
       await refreshTasks();
       return true;
     } catch (error) {
+      finishTaskDeparture(departureKey);
       await refreshTasks();
       showError(error);
       return false;
     }
   }
-  async function removeTask(task: Task): Promise<boolean> {
+  async function removeTask(task: Task, animate = false): Promise<boolean> {
+    const departureKey = animate ? beginTaskDeparture(task, "delete") : null;
     setTasks((current) => ({ ...current, [task.status]: current[task.status].filter((item) => item.id !== task.id) }));
     setPage("home");
     showNotice(t("notice.taskDeleted"));
@@ -305,6 +335,7 @@ export default function App() {
       await refreshTasks();
       return true;
     } catch (error) {
+      if (departureKey) finishTaskDeparture(departureKey);
       await refreshTasks();
       showError(error);
       return false;
@@ -323,8 +354,8 @@ export default function App() {
           <button className={status === "completed" ? "selected" : ""} onClick={() => setStatus("completed")}><span className="tab-count">{tasks.completed.length}</span>{t("task.completed")}</button>
         </div>
         <TaskList>
-          {visibleTasks.map((task) => <TaskRow key={task.id} task={task} theme={theme} onOpen={() => openTask(task)} onEdit={() => { setSelectedTask(task); setPage("edit"); }} onCopy={() => void copyText(task.note ? `${task.title}\n${task.note}` : task.title, task.note ? t("notice.copiedTitleAndNote") : t("notice.copiedTitle"))} onStatus={() => setTaskStatus(task, task.status === "todo" ? "completed" : "todo")} onDelete={() => task.status === "todo" ? setTodoDeleteConfirmation(task) : void removeTask(task)} />)}
-          {!visibleTasks.length && <div className="empty-state"><span className="empty-state-icon" aria-hidden="true" /><p>{status === "todo" ? t("task.emptyTodo") : t("task.emptyCompleted")}</p><span>{status === "todo" ? t("task.emptyTodoHelp") : t("task.emptyCompletedHelp")}</span></div>}
+          {renderedTasks.map(({ task, departure }) => <TaskRow key={departure?.key ?? task.id} task={task} theme={theme} exitKind={departure?.kind} onOpen={() => openTask(task)} onEdit={() => { setSelectedTask(task); setPage("edit"); }} onCopy={() => void copyText(task.note ? `${task.title}\n${task.note}` : task.title, task.note ? t("notice.copiedTitleAndNote") : t("notice.copiedTitle"))} onStatus={() => setTaskStatus(task, task.status === "todo" ? "completed" : "todo")} onDelete={() => task.status === "todo" ? setTodoDeleteConfirmation(task) : void removeTask(task, true)} />)}
+          {!renderedTasks.length && <div className="empty-state"><span className="empty-state-icon" aria-hidden="true" /><p>{status === "todo" ? t("task.emptyTodo") : t("task.emptyCompleted")}</p><span>{status === "todo" ? t("task.emptyTodoHelp") : t("task.emptyCompletedHelp")}</span></div>}
         </TaskList>
       </section>
       <footer className="app-footer"><button className="icon-control" aria-label={t("app.settings")} onClick={() => setPage("settings")}><img src={icon("settings_24_regular.svg")} alt="" /></button><button className="add-control" aria-label={t("task.add")} onClick={() => { setSelectedTask(null); setPage("create"); }}><img src={icon("add_24_regular.svg")} alt="" /></button><button className="resize-grip" aria-label={t("app.resize")} onMouseDown={startResize}><span>{Array.from({ length: 6 }, (_, index) => <i key={index} />)}</span></button></footer>
@@ -333,7 +364,7 @@ export default function App() {
     {importPreview && <ImportPreviewDialog preview={importPreview} operation={importOperation} theme={theme} onApply={applyPlaintextImport} onClose={() => { if (mcpTransfer?.operationId === importPreview.sessionId) void cancelMcpTransfer(); else setImportPreview(null); }} />}
     {encryptedImport && <EncryptedImportPasswordDialog theme={theme} request={encryptedImport} onClose={() => { if (mcpTransfer?.operationId === encryptedImport.sessionId) void cancelMcpTransfer(); else setEncryptedImport(null); }} onPreview={previewEncryptedImport} />}
     {exportDialogOpen && <ExportDataDialog theme={theme} lockedEncrypted={mcpTransfer ? mcpTransfer.operation === "export_encrypted" : undefined} onClose={() => { if (mcpTransfer) void cancelMcpTransfer(); else setExportDialogOpen(false); }} onExportPlaintext={mcpTransfer ? () => exportMcpData() : exportPlaintextData} onExportEncrypted={mcpTransfer ? exportMcpData : exportEncryptedData} />}
-    {todoDeleteConfirmation && <TodoTaskDeleteDialog theme={theme} task={todoDeleteConfirmation} onCancel={() => setTodoDeleteConfirmation(null)} onConfirm={async () => { const task = todoDeleteConfirmation; if (!task) return false; setTodoDeleteConfirmation(null); void removeTask(task); return true; }} />}
+    {todoDeleteConfirmation && <TodoTaskDeleteDialog theme={theme} task={todoDeleteConfirmation} onCancel={() => setTodoDeleteConfirmation(null)} onConfirm={async () => { const task = todoDeleteConfirmation; if (!task) return false; setTodoDeleteConfirmation(null); void removeTask(task, true); return true; }} />}
     {mcpConfirmation && <McpDestructiveConfirmationDialog theme={theme} confirmation={mcpConfirmation} onApprove={approveMcpConfirmation} onReject={rejectMcpConfirmation} />}
     <TextContextMenu theme={theme} />
   </main>;
@@ -725,7 +756,7 @@ function TransparencyDropdown({ value, theme, onChange }: { value: InterfaceTran
   return <><button ref={triggerRef} type="button" className={`task-category-trigger language-trigger ${open ? "open" : ""}`} aria-haspopup="listbox" aria-expanded={open} aria-label={t("settings.interfaceTransparency")} onClick={() => setOpen((current) => !current)}><span>{value}%</span><img src={icon("chevron_right_20_regular.svg")} alt="" /></button>{open && createPortal(<div ref={menuRef} className="task-category-menu language-menu" data-theme={theme} role="listbox" aria-label={t("settings.interfaceTransparency")} style={{ left: position.left, top: position.top, width: position.width, maxHeight: position.maxHeight }}>{values.map((option) => <button key={option} type="button" role="option" aria-selected={value === option} className={value === option ? "selected" : ""} onClick={() => { onChange(option); setOpen(false); }}>{option}%</button>)}</div>, document.body)}</>;
 }
 
-function TaskRow({ task, theme, onOpen, onEdit, onCopy, onStatus, onDelete }: { task: Task; theme: Theme; onOpen: () => void; onEdit: () => void; onCopy: () => void; onStatus: () => Promise<boolean>; onDelete: () => void }) {
+function TaskRow({ task, theme, exitKind, onOpen, onEdit, onCopy, onStatus, onDelete }: { task: Task; theme: Theme; exitKind?: TaskDeparture["kind"]; onOpen: () => void; onEdit: () => void; onCopy: () => void; onStatus: () => Promise<boolean>; onDelete: () => void }) {
   const [confirming, setConfirming] = useState<"status" | "delete" | null>(null);
   const [transitionLocked, setTransitionLocked] = useState(false);
   const [collapseAfterTransition, setCollapseAfterTransition] = useState(false);
@@ -745,6 +776,7 @@ function TaskRow({ task, theme, onOpen, onEdit, onCopy, onStatus, onDelete }: { 
   const [statusFading, setStatusFading] = useState(false);
   const [deleteFading, setDeleteFading] = useState(false);
   const completed = task.status === "completed";
+  const visuallyStatusExiting = statusExiting || exitKind === "status";
   const statusLabel = completed ? t("task.moveToTodo") : t("task.complete");
   const statusIcon = completed ? "arrow_left_20_regular.svg" : "checkmark_20_regular.svg";
   const deleteLabel = t("task.delete");
@@ -871,7 +903,7 @@ function TaskRow({ task, theme, onOpen, onEdit, onCopy, onStatus, onDelete }: { 
     const rect = title.getBoundingClientRect();
     setTooltip({ x: rect.left, y: rect.bottom + 6 });
   }
-  return <article className={`task-row task-row-${task.status} ${confirming === "status" ? "status-confirming" : ""} ${confirming === "delete" ? "delete-confirming" : ""} ${collapsing === "status" ? "status-collapsing" : ""} ${collapsing === "delete" ? "delete-collapsing" : ""} ${statusFading ? "status-fading" : ""} ${deleteFading ? "delete-fading" : ""} ${statusExiting ? `status-exiting status-exiting-${completed ? "left" : "right"}` : ""}`} style={{ "--delete-confirm-width": `${deleteConfirmWidth}px`, "--status-confirm-width": `${statusConfirmWidth}px` } as CSSProperties} onMouseLeave={() => { setTooltip(null); if (statusExiting) return; if (transitionLocked) setCollapseAfterTransition(true); else closeConfirmation(); }}>
+  return <article className={`task-row task-row-${task.status} ${confirming === "status" ? "status-confirming" : ""} ${confirming === "delete" ? "delete-confirming" : ""} ${collapsing === "status" ? "status-collapsing" : ""} ${collapsing === "delete" ? "delete-collapsing" : ""} ${statusFading ? "status-fading" : ""} ${deleteFading ? "delete-fading" : ""} ${visuallyStatusExiting ? `status-exiting status-exiting-${completed ? "left" : "right"}` : ""} ${exitKind === "delete" ? "task-delete-exiting" : ""}`} style={{ "--delete-confirm-width": `${deleteConfirmWidth}px`, "--status-confirm-width": `${statusConfirmWidth}px` } as CSSProperties} onMouseLeave={() => { setTooltip(null); if (visuallyStatusExiting || exitKind === "delete") return; if (transitionLocked) setCollapseAfterTransition(true); else closeConfirmation(); }}>
     <button ref={statusRef} className="task-status" aria-label={confirming === "status" ? `${t("task.confirm")}${statusLabel}` : (completed ? t("task.moveToTodo") : t("task.completeAction"))} aria-disabled={transitionLocked} onClick={handleStatus}>
       <span className="category-dot" style={{ "--category-color": task.categoryColor } as CSSProperties} />
       <span className="task-status-action" aria-hidden="true"><img src={icon(statusIcon)} alt="" /></span>
